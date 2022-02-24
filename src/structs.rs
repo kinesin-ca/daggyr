@@ -1,6 +1,6 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+pub use chrono::{DateTime, Utc};
+pub use serde::{Deserialize, Serialize};
+pub use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 pub type RunID = usize;
@@ -100,6 +100,9 @@ pub struct TaskAttempt {
     pub succeeded: bool,
 
     #[serde(default)]
+    pub killed: bool,
+
+    #[serde(default)]
     pub output: String,
 
     #[serde(default)]
@@ -124,6 +127,7 @@ impl TaskAttempt {
             start_time: Utc::now(),
             stop_time: Utc::now(),
             succeeded: false,
+            killed: false,
             output: "".to_owned(),
             error: "".to_owned(),
             executor: Vec::new(),
