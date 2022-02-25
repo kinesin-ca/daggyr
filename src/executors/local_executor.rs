@@ -28,6 +28,7 @@ fn get_task_details(task: &Task) -> Result<LocalTaskDetail, serde_json::Error> {
     serde_json::from_value::<LocalTaskDetail>(task.details.clone())
 }
 
+#[derive(Clone)]
 struct LocalExecutor {
     run_flags: Arc<Mutex<HashMap<(RunID, TaskID), bool>>>,
 }
@@ -107,7 +108,7 @@ impl Executor for LocalExecutor {
     }
 
     async fn execute_task(
-        &mut self,
+        &self,
         run_id: RunID,
         task_id: TaskID,
         task: Task,
@@ -125,7 +126,10 @@ impl Executor for LocalExecutor {
 
         {
             let mut run_flags = self.run_flags.lock().unwrap();
-            run_flags.insert(tid, true);
+            if run_flags.get(&tid).is_none() {
+                println!("Inserting true for {:?}", tid);
+                run_flags.insert(tid, true);
+            }
         }
 
         attempt.start_time = Utc::now();
@@ -187,14 +191,16 @@ impl Executor for LocalExecutor {
         }
 
         attempt.stop_time = Utc::now();
+        let mut run_flags = self.run_flags.lock().unwrap();
+        run_flags.remove(&tid);
+        println!("Returning attempt");
         Ok(attempt)
     }
 
-    async fn stop_task(&mut self, run_id: RunID, task_id: TaskID) -> Result<()> {
+    async fn stop_task(&self, run_id: RunID, task_id: TaskID) -> Result<()> {
+        let tid = (run_id, task_id);
         let mut run_flags = self.run_flags.lock().unwrap();
-        if let Some(run_flag) = run_flags.get_mut(&(run_id, task_id)) {
-            *run_flag = false;
-        }
+        run_flags.insert(tid, false);
         Ok(())
     }
 }
@@ -202,7 +208,7 @@ impl Executor for LocalExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::task::spawn_local;
+    use tokio::task::spawn;
 
     #[tokio::test]
     async fn test_basic_execution() {
@@ -217,7 +223,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut le = LocalExecutor::new();
+        let le = LocalExecutor::new();
 
         match le.execute_task(0, 0, task).await {
             Ok(attempt) => {
@@ -242,12 +248,19 @@ mod tests {
                 }"#,
         )
         .unwrap();
+        let le = LocalExecutor::new();
+        let lec = LocalExecutor::new();
 
-        let mut le = LocalExecutor::new();
+        let handle = spawn(async move {
+            let res = le.execute_task(0, 0, task).await;
+            res
+        });
 
-        let handle = spawn_local(le.execute_task(0, 0, task));
+        println!("Spawned task");
+        std::thread::sleep(std::time::Duration::from_secs(1));
 
-        le.stop_task(0, 0).await.unwrap();
+        lec.stop_task(0, 0).await;
+        println!("Stopped task");
 
         match handle.await.unwrap() {
             Ok(attempt) => {
@@ -258,5 +271,6 @@ mod tests {
                 panic!("{:?}", e);
             }
         }
+        ()
     }
 }
