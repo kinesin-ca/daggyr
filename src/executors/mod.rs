@@ -1,15 +1,30 @@
 use super::*;
 use crate::structs::{Parameters, RunID, Task, TaskAttempt, TaskID};
-use async_trait::async_trait;
-use tokio;
+use tokio::sync::oneshot;
 
-#[async_trait]
-pub trait Executor {
-    async fn validate_tasks(&self, tasks: Vec<Task>) -> Result<(), Vec<String>>;
-    async fn expand_tasks(&self, tasks: Vec<Task>, parameters: Parameters) -> Result<Vec<Task>>;
-    async fn execute_task(&self, run_id: RunID, task_id: TaskID, task: Task)
-        -> Result<TaskAttempt>;
-    async fn stop_task(&self, run_id: RunID, task_id: TaskID) -> Result<()>;
+#[derive(Debug)]
+pub enum ExecutorMessage {
+    ValidateTasks {
+        tasks: Vec<Task>,
+        response: oneshot::Sender<Result<(), Vec<String>>>,
+    },
+    ExpandTasks {
+        tasks: Vec<Task>,
+        parameters: Parameters,
+        response: oneshot::Sender<Result<Vec<Task>>>,
+    },
+    ExecuteTask {
+        run_id: RunID,
+        task_id: TaskID,
+        task: Task,
+        response: oneshot::Sender<TaskAttempt>,
+        // logger: Sender<LoggerMessage>,
+    },
+    StopTask {
+        run_id: RunID,
+        task_id: TaskID,
+    },
+    Stop {},
 }
 
 pub mod local_executor;

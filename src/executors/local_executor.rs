@@ -1,12 +1,16 @@
 use super::*;
 use crate::structs::*;
 use crate::utilities::*;
-use async_process::{Command, Stdio};
 use chrono::prelude::*;
+use futures::stream::futures_unordered::FuturesUnordered;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use tokio::task::yield_now;
+use std::process::Stdio;
+use tokio::process::Command;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{sleep, Duration};
+
+use futures::StreamExt;
 
 /// Contains specifics on how to run a local task
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -28,20 +32,25 @@ fn get_task_details(task: &Task) -> Result<LocalTaskDetail, serde_json::Error> {
     serde_json::from_value::<LocalTaskDetail>(task.details.clone())
 }
 
-#[derive(Clone)]
-struct LocalExecutor {
-    run_flags: Arc<Mutex<HashMap<(RunID, TaskID), bool>>>,
-}
-
-impl LocalExecutor {
-    fn new() -> Self {
-        LocalExecutor {
-            run_flags: Arc::new(Mutex::new(HashMap::new())),
+async fn validate_tasks(tasks: Vec<Task>) -> Result<(), Vec<String>> {
+    let mut errors = Vec::<String>::new();
+    for (i, task) in tasks.iter().enumerate() {
+        if let Err(err) = get_task_details(&task) {
+            errors.push(format!("[Task {}]: {}\n", i, err))
         }
     }
 
-    fn expand_task(&self, task: &Task, parameters: &Parameters) -> Result<Vec<Task>> {
-        let mut tasks: Vec<Task> = Vec::new();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+async fn expand_tasks(tasks: Vec<Task>, parameters: Parameters) -> Result<Vec<Task>> {
+    let mut expanded_tasks = Vec::new();
+
+    for task in tasks {
         let template = get_task_details(&task)?;
 
         let all_vars: Vec<String> = parameters.keys().into_iter().cloned().collect();
@@ -60,7 +69,7 @@ impl LocalExecutor {
             .collect();
 
         if vars.is_empty() {
-            Ok(vec![task.clone()])
+            expanded_tasks.push(task);
         } else {
             let new_cmds = apply_vars(&template.command, &parameters, &vars);
             let new_envs = apply_vars(&env_values, &parameters, &vars);
@@ -73,204 +82,273 @@ impl LocalExecutor {
                     .zip(new_env_vals.iter().cloned())
                     .collect();
                 new_task.instance = i;
-                tasks.push(new_task);
+                expanded_tasks.push(new_task);
             }
-
-            Ok(tasks)
         }
     }
+
+    Ok(expanded_tasks)
 }
 
-#[async_trait]
-impl Executor for LocalExecutor {
-    async fn validate_tasks(&self, tasks: Vec<Task>) -> Result<(), Vec<String>> {
-        let mut errors = Vec::<String>::new();
-        for (i, task) in tasks.iter().enumerate() {
-            if let Err(err) = get_task_details(&task) {
-                errors.push(format!("[Task {}]: {}\n", i, err))
-            }
-        }
+async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt {
+    let details = get_task_details(&task).unwrap();
+    let mut attempt = TaskAttempt::new();
+    attempt.executor.push(format!("{:?}\n", details));
+    let (program, args) = details.command.split_first().unwrap();
+    let mut command = Command::new(program);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    command.args(args);
+    command.envs(details.environment);
 
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
+    attempt.start_time = Utc::now();
+
+    // Generate a timeout message, if needed
+    let (timeout_tx, mut timeout_rx) = oneshot::channel();
+    if details.timeout > 0 {
+        let timeout = details.timeout as u64;
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(1000 * timeout)).await;
+            timeout_tx.send(()).unwrap_or(());
+        });
     }
 
-    async fn expand_tasks(&self, tasks: Vec<Task>, parameters: Parameters) -> Result<Vec<Task>> {
-        let mut all_tasks = Vec::new();
+    let (cmd_tx, mut cmd_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let result = command.output().await;
+        cmd_tx.send(result).unwrap_or(());
+    });
 
-        for task in tasks {
-            all_tasks.extend(self.expand_task(&task, &parameters)?);
-        }
-        Ok(all_tasks)
-    }
-
-    async fn execute_task(
-        &self,
-        run_id: RunID,
-        task_id: TaskID,
-        task: Task,
-    ) -> Result<TaskAttempt> {
-        let details = get_task_details(&task).unwrap();
-        let mut attempt = TaskAttempt::new();
-        attempt.executor.push(format!("{:?}\n", details));
-        let (program, args) = details.command.split_first().unwrap();
-        let mut command = Command::new(program);
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        command.args(args);
-        command.envs(details.environment);
-
-        let tid = (run_id, task_id);
-
-        {
-            let mut run_flags = self.run_flags.lock().unwrap();
-            if run_flags.get(&tid).is_none() {
-                println!("Inserting true for {:?}", tid);
-                run_flags.insert(tid, true);
-            }
-        }
-
-        attempt.start_time = Utc::now();
-        match command.spawn() {
-            Ok(mut child) => {
-                loop {
-                    match child.try_status() {
-                        Ok(Some(_)) => {
-                            let child = child.output().await?;
-                            attempt.succeeded = child.status.success();
+    tokio::select! {
+        msg = (&mut cmd_rx) => {
+            match msg {
+                Ok(result) => {
+                    match result {
+                        Ok(child) => {
+                            attempt.succeeded =child.status.success();
                             attempt.output = String::from_utf8_lossy(&child.stdout).to_string();
                             attempt.error = String::from_utf8_lossy(&child.stderr).to_string();
                             attempt.exit_code = match child.status.code() {
                                 Some(code) => code,
                                 None => -1i32,
                             };
-                            break;
-                        }
-                        Ok(None) => {
-                            // Job not finished
-                        }
-                        Err(_) => {
-                            // Job doesn't exist anymore
+                        },
+                        Err(e) => {
+                            attempt.executor.push(format!("Failed to execute task {:?}", e));
                         }
                     }
-                    if details.timeout > 0 {
-                        let elapsed_seconds = (Utc::now() - attempt.start_time).num_seconds();
-                        if elapsed_seconds > details.timeout {
-                            match child.kill() {
-                                Ok(()) => {
-                                    attempt
-                                        .executor
-                                        .push("Task killed due to timeout".to_owned());
-                                }
-                                Err(_) => {}
-                            }
-                        }
-                    }
-
-                    let running;
-                    {
-                        let run_flags = self.run_flags.lock().unwrap();
-                        running = *run_flags.get(&tid).unwrap_or(&false);
-                    }
-                    if !running {
-                        if let Ok(_) = child.kill() {
-                            attempt.executor.push("Task killed".to_owned());
-                            attempt.killed = true;
-                            break;
-                        }
-                    }
-                    yield_now().await;
+                }
+                Err(e) => {
+                    attempt.executor.push(format!("Failed to execute task {:?}", e));
                 }
             }
-            Err(e) => {
-                attempt.succeeded = false;
-                attempt.error = e.to_string();
+        },
+        _ = (&mut stop_rx) => {
+            attempt.killed = true;
+        }
+        _ = (&mut timeout_rx) => {
+            attempt.killed = true;
+            attempt.executor.push("Task exceeded the timeout interval and was killed".to_owned());
+        }
+    }
+    attempt.stop_time = Utc::now();
+    attempt
+}
+
+/// The mpsc channel can be sized to fit max parallelism
+async fn start_local_executor(max_parallel: usize, mut exe_msgs: mpsc::Receiver<ExecutorMessage>) {
+    let mut task_channels = HashMap::<(RunID, TaskID), oneshot::Sender<()>>::new();
+
+    let mut running = FuturesUnordered::new();
+
+    while let Some(msg) = exe_msgs.recv().await {
+        use ExecutorMessage::*;
+        match msg {
+            ValidateTasks { tasks, response } => {
+                tokio::spawn(async move {
+                    let result = validate_tasks(tasks).await;
+                    response.send(result).unwrap_or(());
+                });
+            }
+            ExpandTasks {
+                tasks,
+                parameters,
+                response,
+            } => {
+                tokio::spawn(async move {
+                    let result = expand_tasks(tasks, parameters).await;
+                    response.send(result).unwrap_or(());
+                });
+            }
+            ExecuteTask {
+                run_id,
+                task_id,
+                task,
+                response,
+                // logger,
+            } => {
+                let (tx, rx) = oneshot::channel();
+                task_channels.insert((run_id, task_id), tx);
+                if running.len() == max_parallel {
+                    running.next().await;
+                }
+                running.push(tokio::spawn(async move {
+                    let attempt = run_task(task, rx).await;
+                    response.send(attempt).unwrap_or(());
+                }));
+            }
+            StopTask { run_id, task_id } => {
+                if let Some(tx) = task_channels.remove(&(run_id, task_id)) {
+                    tx.send(()).unwrap_or(());
+                }
+            }
+            Stop {} => {
+                break;
             }
         }
-
-        attempt.stop_time = Utc::now();
-        let mut run_flags = self.run_flags.lock().unwrap();
-        run_flags.remove(&tid);
-        println!("Returning attempt");
-        Ok(attempt)
-    }
-
-    async fn stop_task(&self, run_id: RunID, task_id: TaskID) -> Result<()> {
-        let tid = (run_id, task_id);
-        let mut run_flags = self.run_flags.lock().unwrap();
-        run_flags.insert(tid, false);
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::task::spawn;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn test_basic_execution() {
         let task: Task = serde_json::from_str(
             r#"
-                {
-                    "class": "simple_task",
-                    "details": {
-                        "command": [ "/bin/echo", "hello", "world" ]
-                    }
-                }"#,
+            {
+                "class": "simple_task",
+                "details": {
+                    "command": [ "/bin/echo", "hello", "world" ]
+                }
+            }"#,
         )
         .unwrap();
 
-        let le = LocalExecutor::new();
+        let (tx, rx) = mpsc::channel(10);
 
-        match le.execute_task(0, 0, task).await {
-            Ok(attempt) => {
-                assert!(attempt.succeeded);
-                assert_eq!(attempt.output, "hello world\n");
-            }
-            Err(e) => {
-                panic!("Unexpected error: {:?}", e);
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_stop_task() {
-        let task: Task = serde_json::from_str(
-            r#"
-                {
-                    "class": "sleepy_task",
-                    "details": {
-                        "command": [ "/bin/sleep", "60" ]
-                    }
-                }"#,
-        )
-        .unwrap();
-        let le = LocalExecutor::new();
-        let lec = LocalExecutor::new();
-
-        let handle = spawn(async move {
-            let res = le.execute_task(0, 0, task).await;
-            res
+        tokio::spawn(async move {
+            start_local_executor(10, rx).await;
         });
 
-        println!("Spawned task");
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // Submit the task
+        let (run_tx, run_rx) = oneshot::channel();
+        tx.send(ExecutorMessage::ExecuteTask {
+            run_id: 0,
+            task_id: 0,
+            task: task,
+            response: run_tx,
+        })
+        .await
+        .expect("Unable to spawn task");
 
-        lec.stop_task(0, 0).await;
-        println!("Stopped task");
+        let attempt = run_rx.await.expect("Unable to receive data from result");
 
-        match handle.await.unwrap() {
-            Ok(attempt) => {
-                assert!(attempt.killed);
-                assert!(attempt.stop_time - attempt.start_time < chrono::Duration::seconds(5));
+        assert!(attempt.succeeded);
+        assert_eq!(attempt.output, "hello world\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
+    async fn test_stop_execution() {
+        let task: Task = serde_json::from_str(
+            r#"
+            {
+                "class": "simple_task",
+                "details": {
+                    "command": [ "/bin/sleep", "60" ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let (tx, rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            start_local_executor(3, rx).await;
+        });
+
+        // Submit the task
+        let (run_tx, run_rx) = oneshot::channel();
+        tx.send(ExecutorMessage::ExecuteTask {
+            run_id: 0,
+            task_id: 0,
+            task: task,
+            response: run_tx,
+        })
+        .await
+        .expect("Unable to spawn task");
+
+        tx.send(ExecutorMessage::StopTask {
+            run_id: 0,
+            task_id: 0,
+        })
+        .await
+        .expect("Unable to stop task");
+
+        let attempt = run_rx.await.expect("Unable to receive data from result");
+
+        assert!(attempt.killed);
+        assert!(attempt.stop_time - attempt.start_time < chrono::Duration::seconds(5));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
+    async fn test_max_parallel_execution() {
+        let task: Task = serde_json::from_str(
+            r#"
+            {
+                "class": "simple_task",
+                "details": {
+                    "command": [ "/bin/sleep", "2" ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let max_parallel = 5;
+        let (tx, rx) = mpsc::channel(100);
+        tokio::spawn(async move {
+            start_local_executor(max_parallel, rx).await;
+        });
+
+        let mut chans = Vec::new();
+        for i in 0..10 {
+            // Submit the task
+            let (run_tx, run_rx) = oneshot::channel();
+            tx.send(ExecutorMessage::ExecuteTask {
+                run_id: 0,
+                task_id: i,
+                task: task.clone(),
+                response: run_tx,
+            })
+            .await
+            .expect("Unable to spawn task");
+            chans.push(run_rx);
+        }
+
+        let mut sequence = Vec::new();
+        for chan in chans {
+            let attempt = chan.await.expect("Unable to recv");
+            sequence.push((attempt.start_time, "start"));
+            sequence.push((attempt.stop_time, "stop"));
+        }
+
+        sequence.sort();
+
+        let mut n_running = 0;
+        let mut max_running = 0;
+        for (_, event) in sequence {
+            if event == "start" {
+                n_running += 1;
+            } else {
+                n_running -= 1;
             }
-            Err(e) => {
-                panic!("{:?}", e);
+            if n_running > max_running {
+                max_running = n_running;
             }
         }
-        ()
+
+        assert!(max_running <= max_parallel);
+        assert!(max_running >= max_parallel - 1);
     }
 }
