@@ -101,6 +101,8 @@ async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt
     command.args(args);
     command.envs(details.environment);
 
+    let mut child = command.spawn().unwrap();
+
     attempt.start_time = Utc::now();
 
     // Generate a timeout message, if needed
@@ -113,44 +115,30 @@ async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt
         });
     }
 
-    let (cmd_tx, mut cmd_rx) = oneshot::channel();
-    tokio::spawn(async move {
-        let result = command.output().await;
-        cmd_tx.send(result).unwrap_or(());
-    });
-
     tokio::select! {
-        msg = (&mut cmd_rx) => {
-            match msg {
-                Ok(result) => {
-                    match result {
-                        Ok(child) => {
-                            attempt.succeeded =child.status.success();
-                            attempt.output = String::from_utf8_lossy(&child.stdout).to_string();
-                            attempt.error = String::from_utf8_lossy(&child.stderr).to_string();
-                            attempt.exit_code = match child.status.code() {
-                                Some(code) => code,
-                                None => -1i32,
-                            };
-                        },
-                        Err(e) => {
-                            attempt.executor.push(format!("Failed to execute task {:?}", e));
-                        }
-                    }
-                }
-                Err(e) => {
-                    attempt.executor.push(format!("Failed to execute task {:?}", e));
-                }
-            }
-        },
+        _ = child.wait() => {},
         _ = (&mut stop_rx) => {
             attempt.killed = true;
+            child.kill().await.unwrap_or(());
+            attempt.executor.push("Task was killed by request".to_owned());
         }
         _ = (&mut timeout_rx) => {
+            child.kill().await.unwrap_or(());
             attempt.killed = true;
             attempt.executor.push("Task exceeded the timeout interval and was killed".to_owned());
         }
     }
+
+    // Get any output
+    let output = child.wait_with_output().await.unwrap();
+    attempt.succeeded = output.status.success();
+    attempt.output = String::from_utf8_lossy(&output.stdout).to_string();
+    attempt.error = String::from_utf8_lossy(&output.stderr).to_string();
+    attempt.exit_code = match output.status.code() {
+        Some(code) => code,
+        None => -1i32,
+    };
+
     attempt.stop_time = Utc::now();
     attempt
 }
