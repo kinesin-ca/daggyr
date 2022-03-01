@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{sleep, Duration};
 
 use futures::StreamExt;
+use tokio::io::AsyncReadExt;
 
 /// Contains specifics on how to run a local task
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -101,9 +102,22 @@ async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt
     command.args(args);
     command.envs(details.environment);
 
+    attempt.start_time = Utc::now();
     let mut child = command.spawn().unwrap();
 
-    attempt.start_time = Utc::now();
+    let mut stdout_handle = child.stdout.take().unwrap();
+    let stdout_reader = tokio::spawn(async move {
+        let mut data = Vec::new();
+        stdout_handle.read_to_end(&mut data).await.unwrap();
+        data
+    });
+
+    let mut stderr_handle = child.stderr.take().unwrap();
+    let stderr_reader = tokio::spawn(async move {
+        let mut data = Vec::new();
+        stderr_handle.read_to_end(&mut data).await.unwrap();
+        data
+    });
 
     // Generate a timeout message, if needed
     let (timeout_tx, mut timeout_rx) = oneshot::channel();
@@ -132,8 +146,8 @@ async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt
     // Get any output
     let output = child.wait_with_output().await.unwrap();
     attempt.succeeded = output.status.success();
-    attempt.output = String::from_utf8_lossy(&output.stdout).to_string();
-    attempt.error = String::from_utf8_lossy(&output.stderr).to_string();
+    attempt.output = String::from_utf8_lossy(&stdout_reader.await.unwrap()).to_string();
+    attempt.error = String::from_utf8_lossy(&stderr_reader.await.unwrap()).to_string();
     attempt.exit_code = match output.status.code() {
         Some(code) => code,
         None => -1i32,
@@ -341,5 +355,40 @@ mod tests {
 
         assert!(max_running <= max_parallel);
         assert!(max_running >= max_parallel - 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
+    async fn test_large_ouput() {
+        let task: Task = serde_json::from_str(
+            r#"
+            {
+                "class": "simple_task",
+                "details": {
+                    "command": [ "/usr/bin/dd", "if=/dev/random", "count=10", "bs=1024k" ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let (tx, rx) = mpsc::channel(100);
+        tokio::spawn(async move {
+            start_local_executor(10, rx).await;
+        });
+
+        // Submit the task
+        let (run_tx, run_rx) = oneshot::channel();
+        tx.send(ExecutorMessage::ExecuteTask {
+            run_id: 0,
+            task_id: 0,
+            task: task.clone(),
+            response: run_tx,
+        })
+        .await
+        .expect("Unable to spawn task");
+
+        let attempt = run_rx.await.expect("Unable to recv");
+
+        assert!(attempt.succeeded);
+        assert!(attempt.output.len() >= 1024 * 1024 * 10);
     }
 }

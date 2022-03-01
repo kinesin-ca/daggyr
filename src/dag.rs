@@ -1,4 +1,5 @@
 use crate::structs::State;
+use crate::Result;
 use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
@@ -58,7 +59,7 @@ impl DAG {
         self.vertices.len()
     }
 
-    pub fn set_vertex_state(&mut self, id: usize, state: State) -> Result<(), String> {
+    pub fn set_vertex_state(&mut self, id: usize, state: State) -> Result<()> {
         let cur_state = self.vertices[id].state;
 
         if cur_state == state {
@@ -80,9 +81,10 @@ impl DAG {
                 self.complete_visit(id, true);
             }
             (_, _) => {
-                return Err(format!(
+                return Err(anyhow!(
                     "Unsupported transition from {:?} to {:?}",
-                    cur_state, state
+                    cur_state,
+                    state
                 ));
             }
         }
@@ -90,9 +92,9 @@ impl DAG {
         Ok(())
     }
 
-    pub fn add_edge(&mut self, src: usize, dst: usize) -> Result<(), &'static str> {
+    pub fn add_edge(&mut self, src: usize, dst: usize) -> Result<()> {
         if self.has_path(dst, src) {
-            return Err("Adding edge would result in a loop");
+            return Err(anyhow!("Adding edge would result in a loop"));
         }
         self.vertices[src].children.insert(dst);
         self.vertices[dst].parents.insert(src);
@@ -205,11 +207,8 @@ mod test {
         let mut dag = DAG::new();
         dag.add_vertices(3);
         dag.add_edge(0, 1).unwrap();
-        assert_eq!(dag.add_edge(1, 2), Ok(()));
-        assert_eq!(
-            dag.add_edge(2, 0),
-            Err("Adding edge would result in a loop")
-        );
+        assert!(dag.add_edge(1, 2).is_ok());
+        assert!(dag.add_edge(2, 0).is_err());
     }
 
     #[test]
