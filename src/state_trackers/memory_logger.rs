@@ -1,15 +1,13 @@
-use super::*;
+use crate::messages::*;
+use crate::structs::*;
+use crate::Result;
 use tokio::sync::mpsc;
 
-fn range_checker(
-    runs: &Vec<RunRecord>,
-    run_id: RunID,
-    task_id: Option<TaskID>,
-) -> Result<(), String> {
+fn range_checker(runs: &Vec<RunRecord>, run_id: RunID, task_id: Option<TaskID>) -> Result<()> {
     match (run_id, task_id) {
-        (run_id, _) if run_id >= runs.len() => Err(format!("No run with ID {} exists", run_id)),
+        (run_id, _) if run_id >= runs.len() => Err(anyhow!("No run with ID {} exists", run_id)),
         (run_id, Some(tid)) if tid >= runs[run_id].tasks.len() => {
-            Err(format!("Run ID {} has no task with ID {}", run_id, tid))
+            Err(anyhow!("Run ID {} has no task with ID {}", run_id, tid))
         }
         _ => Ok(()),
     }

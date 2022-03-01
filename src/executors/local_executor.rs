@@ -199,7 +199,13 @@ pub async fn start_local_executor(
                 }
                 running.push(tokio::spawn(async move {
                     let attempt = run_task(task, rx).await;
-                    response.send(attempt).unwrap_or(());
+                    response
+                        .send(RunnerMessage::ExecutionReport {
+                            run_id,
+                            task_id,
+                            attempt,
+                        })
+                        .await
                 }));
             }
             StopTask { run_id, task_id } => {
@@ -238,7 +244,7 @@ mod tests {
         });
 
         // Submit the task
-        let (run_tx, run_rx) = oneshot::channel();
+        let (run_tx, mut run_rx) = mpsc::channel(10);
         tx.send(ExecutorMessage::ExecuteTask {
             run_id: 0,
             task_id: 0,
@@ -248,10 +254,25 @@ mod tests {
         .await
         .expect("Unable to spawn task");
 
-        let attempt = run_rx.await.expect("Unable to receive data from result");
-
-        assert!(attempt.succeeded);
-        assert_eq!(attempt.output, "hello world\n");
+        match run_rx
+            .recv()
+            .await
+            .expect("Unable to receive data from result")
+        {
+            RunnerMessage::ExecutionReport {
+                run_id,
+                task_id,
+                attempt,
+            } => {
+                assert!(attempt.succeeded);
+                assert_eq!(attempt.output, "hello world\n");
+                assert_eq!(run_id, 0);
+                assert_eq!(task_id, 0);
+            }
+            _ => {
+                panic!("Unexpected message")
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
@@ -274,7 +295,7 @@ mod tests {
         });
 
         // Submit the task
-        let (run_tx, run_rx) = oneshot::channel();
+        let (run_tx, mut run_rx) = mpsc::channel(10);
         tx.send(ExecutorMessage::ExecuteTask {
             run_id: 0,
             task_id: 0,
@@ -291,10 +312,25 @@ mod tests {
         .await
         .expect("Unable to stop task");
 
-        let attempt = run_rx.await.expect("Unable to receive data from result");
-
-        assert!(attempt.killed);
-        assert!(attempt.stop_time - attempt.start_time < chrono::Duration::seconds(5));
+        match run_rx
+            .recv()
+            .await
+            .expect("Unable to receive data from result")
+        {
+            RunnerMessage::ExecutionReport {
+                run_id,
+                task_id,
+                attempt,
+            } => {
+                assert!(attempt.killed);
+                assert!(attempt.stop_time - attempt.start_time < chrono::Duration::seconds(5));
+                assert_eq!(run_id, 0);
+                assert_eq!(task_id, 0);
+            }
+            _ => {
+                panic!("Unexpected message")
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
@@ -319,7 +355,7 @@ mod tests {
         let mut chans = Vec::new();
         for i in 0..10 {
             // Submit the task
-            let (run_tx, run_rx) = oneshot::channel();
+            let (run_tx, run_rx) = mpsc::channel(10);
             tx.send(ExecutorMessage::ExecuteTask {
                 run_id: 0,
                 task_id: i,
@@ -332,10 +368,17 @@ mod tests {
         }
 
         let mut sequence = Vec::new();
-        for chan in chans {
-            let attempt = chan.await.expect("Unable to recv");
-            sequence.push((attempt.start_time, "start"));
-            sequence.push((attempt.stop_time, "stop"));
+        for mut chan in chans {
+            let report = chan.recv().await.expect("Unable to recv");
+            match report {
+                RunnerMessage::ExecutionReport { attempt, .. } => {
+                    sequence.push((attempt.start_time, "start"));
+                    sequence.push((attempt.stop_time, "stop"));
+                }
+                _ => {
+                    panic!("Unexpected message")
+                }
+            }
         }
 
         sequence.sort();
@@ -376,7 +419,7 @@ mod tests {
         });
 
         // Submit the task
-        let (run_tx, run_rx) = oneshot::channel();
+        let (run_tx, mut run_rx) = mpsc::channel(10);
         tx.send(ExecutorMessage::ExecuteTask {
             run_id: 0,
             task_id: 0,
@@ -386,9 +429,21 @@ mod tests {
         .await
         .expect("Unable to spawn task");
 
-        let attempt = run_rx.await.expect("Unable to recv");
-
-        assert!(attempt.succeeded);
-        assert!(attempt.output.len() >= 1024 * 1024 * 10);
+        let report = run_rx.recv().await.expect("Unable to recv");
+        match report {
+            RunnerMessage::ExecutionReport {
+                run_id,
+                task_id,
+                attempt,
+            } => {
+                assert!(attempt.succeeded);
+                assert!(attempt.output.len() >= 1024 * 1024 * 10);
+                assert_eq!(run_id, 0);
+                assert_eq!(task_id, 0);
+            }
+            _ => {
+                panic!("Unexpected message")
+            }
+        }
     }
 }
