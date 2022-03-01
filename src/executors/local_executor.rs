@@ -144,7 +144,10 @@ async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt
 }
 
 /// The mpsc channel can be sized to fit max parallelism
-async fn start_local_executor(max_parallel: usize, mut exe_msgs: mpsc::Receiver<ExecutorMessage>) {
+pub async fn start_local_executor(
+    max_parallel: usize,
+    mut exe_msgs: mpsc::Receiver<ExecutorMessage>,
+) {
     let mut task_channels = HashMap::<(RunID, TaskID), oneshot::Sender<()>>::new();
 
     let mut running = FuturesUnordered::new();

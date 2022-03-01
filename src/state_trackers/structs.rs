@@ -8,7 +8,7 @@ pub struct StateChange {
 }
 
 impl StateChange {
-    fn new(state: State) -> Self {
+    pub fn new(state: State) -> Self {
         StateChange {
             datetime: Utc::now(),
             state: state,
@@ -32,7 +32,7 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
-    fn new(task: Task) -> Self {
+    pub fn new(task: Task) -> Self {
         TaskRecord {
             task: task,
             attempts: Vec::new(),
@@ -71,7 +71,7 @@ pub struct RunSummary {
 }
 
 impl RunSummary {
-    fn new(run_id: RunID, tags: Tags, state: State) -> Self {
+    pub fn new(run_id: RunID, tags: Tags, state: State) -> Self {
         RunSummary {
             run_id,
             tags,
