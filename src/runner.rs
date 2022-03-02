@@ -51,7 +51,7 @@ impl Run {
             .await?;
         let tasks = rx.await??;
 
-        run.add_tasks(&tasks).await?;
+        run.add_tasks(&tasks)?;
 
         // Create the run ID and update the logger
         let (tx, rx) = oneshot::channel();
@@ -127,7 +127,7 @@ impl Run {
             runner,
         };
 
-        run.add_tasks(&tasks).await?;
+        run.add_tasks(&tasks)?;
 
         // Update the task states
         for (task_id, state) in states.iter().enumerate() {
@@ -157,7 +157,7 @@ impl Run {
     }
 
     /// Adds the tasks and sets up the DAG
-    async fn add_tasks(&mut self, tasks: &Vec<Task>) -> Result<()> {
+    fn add_tasks(&mut self, tasks: &Vec<Task>) -> Result<()> {
         let offset = self.tasks.len();
 
         // Add vertices
@@ -259,7 +259,7 @@ impl Run {
                             task_id: task_id,
                             task: self.tasks[task_id].clone(),
                             response: self.runner.clone(),
-                            // logger: self.logger.clone(),
+                            logger: self.logger.clone(),
                         })
                         .await
                         .unwrap_or(());
@@ -300,7 +300,7 @@ impl Run {
 
         // Set the parent and children for each task
         let offset = self.tasks.len();
-        self.add_tasks(&exp_tasks).await?;
+        self.add_tasks(&exp_tasks)?;
 
         // Let the logger know
         self.logger
@@ -490,3 +490,257 @@ pub async fn start_dag_runner(
         }
     }
 }
+
+/*
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(
+        tasks: &Vec<Task>,
+        expansion_values: &ExpansionValues,
+    ) -> (RunID, std::thread::JoinHandle<()>, Sender<LoggerMessage>) {
+        let (log_tx, log_rx) = mpsc::channel(100);
+        let (exe_tx, exe_rx) = mpsc::channel(100);
+        let (run_tx, run_rx) = mpsc::channel(100);
+
+        let (tx, rx) = unbounded();
+        run_tx
+            .send(RunnerMessage::Start {
+                tags: Tags::new(),
+                tasks: tasks.clone(),
+                response: tx,
+                expansion_values: expansion_values.clone(),
+                logger: log_tx.clone(),
+                executor: exe_tx.clone(),
+            })
+            .unwrap();
+
+        let run_id = rx.recv().unwrap().unwrap();
+
+        // Need some way to get
+        loop {
+            let (tx, rx) = unbounded();
+
+            log_tx
+                .send(LoggerMessage::GetRunState {
+                    run_id: run_id,
+                    response: tx,
+                })
+                .unwrap();
+            let state_change = rx.recv().unwrap().unwrap();
+
+            if state_change.state == RunState::Completed || state_change.state == RunState::Errored
+            {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        // Close off everything except the logger
+        exe_tx.send(ExecutorMessage::Stop {}).unwrap();
+        run_tx.send(RunnerMessage::Stop {}).unwrap();
+
+        runner.join().unwrap();
+        executor.join().unwrap();
+
+        (run_id, logger, log_tx)
+    }
+
+    #[test]
+    fn test_simple_dag_run() -> () {
+        let tasks: Vec<Task> = serde_json::from_str(
+            r#"
+            [
+                {
+                    "class": "simple_task",
+                    "details": {
+                        "command": [ "/bin/echo", "hello", "world" ],
+                        "env": {
+                            "ENVVAR": 16
+                        }
+                    },
+                    "children": [ "other_task" ]
+                },
+                {
+                    "class": "other_task",
+                    "details": {
+                        "command": [ "/bin/echo", "task", "$ENVVAR" ],
+                        "env": {
+                            "ENVVAR": 16
+                        }
+                    }
+                }
+            ]"#,
+        )
+        .unwrap();
+
+        let expansion_values = HashMap::new();
+
+        let (run_id, logger, log_tx) = run(&tasks, &expansion_values);
+
+        for (tid, task) in tasks.iter().enumerate() {
+            let (tx, rx) = unbounded();
+            log_tx
+                .send(LoggerMessage::GetTask {
+                    run_id: run_id,
+                    task_id: tid,
+                    response: tx,
+                })
+                .unwrap();
+
+            let task_record = rx.recv().unwrap().unwrap();
+            assert_eq!(*task, task_record.task);
+            assert_eq!(task_record.attempts.len(), 1);
+            assert_eq!(
+                task_record.state_changes.last().unwrap().state,
+                daggyr_core::defines::RunState::Completed
+            );
+        }
+
+        // Close off logger
+        log_tx.send(LoggerMessage::Stop {}).unwrap();
+        logger.join().unwrap();
+    }
+
+    #[test]
+    fn test_failing_generating_dag_run() -> () {
+        let tasks: Vec<Task> = serde_json::from_str(
+            r#"
+            [
+                {
+                    "class": "simple_task",
+                    "details": {
+                        "command": [ "/bin/echo", "hello", "world" ],
+                        "env": {
+                            "ENVVAR": 16
+                        }
+                    },
+                    "children": [ "other_task" ],
+                    "is_generator": true
+                },
+                {
+                    "class": "other_task",
+                    "details": {
+                        "command": [ "/bin/echo", "task", "$ENVVAR" ],
+                        "env": {
+                            "ENVVAR": 16
+                        }
+                    }
+                }
+            ]"#,
+        )
+        .unwrap();
+
+        let expansion_values = HashMap::new();
+
+        let (run_id, logger, log_tx) = run(&tasks, &expansion_values);
+
+        for (tid, task) in tasks.iter().enumerate() {
+            let (tx, rx) = unbounded();
+            log_tx
+                .send(LoggerMessage::GetTask {
+                    run_id: run_id,
+                    task_id: tid,
+                    response: tx,
+                })
+                .unwrap();
+
+            let task_record = rx.recv().unwrap().unwrap();
+            assert_eq!(*task, task_record.task);
+
+            match task.class.as_ref() {
+                "simple_task" => {
+                    assert_eq!(task_record.state_changes.len(), 3);
+                    assert_eq!(
+                        task_record.state_changes.last().unwrap().state,
+                        daggyr_core::defines::RunState::Errored
+                    );
+                }
+                "other_task" => {
+                    assert_eq!(task_record.state_changes.len(), 1);
+                    assert_eq!(
+                        task_record.state_changes.last().unwrap().state,
+                        daggyr_core::defines::RunState::Queued
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        log_tx.send(LoggerMessage::Stop {}).unwrap();
+        logger.join().unwrap();
+    }
+
+    #[test]
+    fn test_successful_generating_dag_run() -> () {
+        use serde_json::json;
+
+        let mut tasks: Vec<Task> = serde_json::from_str(
+            r#"
+            [
+                {
+                    "class": "other_task",
+                    "details": {
+                        "command": [ "/bin/echo", "task", "$ENVVAR" ]
+                    }
+                }
+            ]"#,
+        )
+        .unwrap();
+
+        let new_task = r#"[ {
+        "class": "generated_task",
+        "details": {
+                        "command": [ "/bin/echo", "hello", "world" ]
+                    }
+    }]"#;
+
+        let expansion_values = HashMap::new();
+
+        let mut gen_task = Task::new();
+        gen_task.is_generator = true;
+        gen_task.class = "fancy_generator".to_owned();
+        gen_task.children.push("other_task".to_owned());
+        gen_task.details = json!({
+            "command": [ "/bin/echo", new_task ]
+        });
+
+        tasks.push(gen_task);
+
+        let (run_id, logger, log_tx) = run(&tasks, &expansion_values);
+
+        let mut new_tasks: Vec<Task> = serde_json::from_str(new_task).unwrap();
+        new_tasks[0].children.push("other_task".to_owned());
+        new_tasks[0].parents.push("fancy_generator".to_owned());
+        tasks.append(&mut new_tasks);
+
+        assert_eq!(tasks.len(), 3);
+
+        for (tid, task) in tasks.iter().enumerate() {
+            let (tx, rx) = unbounded();
+            log_tx
+                .send(LoggerMessage::GetTask {
+                    run_id: run_id,
+                    task_id: tid,
+                    response: tx,
+                })
+                .unwrap();
+
+            let task_record = rx.recv().unwrap().unwrap();
+            assert_eq!(*task, task_record.task);
+
+            assert_eq!(task_record.state_changes.len(), 3);
+            assert_eq!(
+                task_record.state_changes.last().unwrap().state,
+                daggyr_core::defines::RunState::Completed
+            );
+        }
+
+        // Close off everything
+        log_tx.send(LoggerMessage::Stop {}).unwrap();
+        logger.join().unwrap();
+    }
+}
+*/

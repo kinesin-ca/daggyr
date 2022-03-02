@@ -121,7 +121,7 @@ pub enum ExecutorMessage {
         task_id: TaskID,
         task: Task,
         response: mpsc::Sender<RunnerMessage>,
-        // logger: Sender<LoggerMessage>,
+        logger: mpsc::Sender<LoggerMessage>,
     },
     StopTask {
         run_id: RunID,

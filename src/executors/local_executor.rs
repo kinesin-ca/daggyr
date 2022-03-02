@@ -190,13 +190,21 @@ pub async fn start_local_executor(
                 task_id,
                 task,
                 response,
-                // logger,
+                logger,
             } => {
                 let (tx, rx) = oneshot::channel();
                 task_channels.insert((run_id, task_id), tx);
                 if running.len() == max_parallel {
                     running.next().await;
                 }
+                logger
+                    .send(LoggerMessage::UpdateTaskState {
+                        run_id,
+                        task_id,
+                        state: State::Running,
+                    })
+                    .await
+                    .unwrap_or(());
                 running.push(tokio::spawn(async move {
                     let attempt = run_task(task, rx).await;
                     response
@@ -223,6 +231,7 @@ pub async fn start_local_executor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state_trackers::noop_logger::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn test_basic_execution() {
@@ -237,8 +246,12 @@ mod tests {
         )
         .unwrap();
 
-        let (tx, rx) = mpsc::channel(10);
+        let (log_tx, log_rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            start_noop_logger(log_rx).await;
+        });
 
+        let (tx, rx) = mpsc::channel(10);
         tokio::spawn(async move {
             start_local_executor(10, rx).await;
         });
@@ -250,6 +263,7 @@ mod tests {
             task_id: 0,
             task: task,
             response: run_tx,
+            logger: log_tx,
         })
         .await
         .expect("Unable to spawn task");
@@ -288,8 +302,12 @@ mod tests {
         )
         .unwrap();
 
-        let (tx, rx) = mpsc::channel(10);
+        let (log_tx, log_rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            start_noop_logger(log_rx).await;
+        });
 
+        let (tx, rx) = mpsc::channel(10);
         tokio::spawn(async move {
             start_local_executor(3, rx).await;
         });
@@ -301,6 +319,7 @@ mod tests {
             task_id: 0,
             task: task,
             response: run_tx,
+            logger: log_tx,
         })
         .await
         .expect("Unable to spawn task");
@@ -347,6 +366,12 @@ mod tests {
         .unwrap();
 
         let max_parallel = 5;
+
+        let (log_tx, log_rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            start_noop_logger(log_rx).await;
+        });
+
         let (tx, rx) = mpsc::channel(100);
         tokio::spawn(async move {
             start_local_executor(max_parallel, rx).await;
@@ -361,6 +386,7 @@ mod tests {
                 task_id: i,
                 task: task.clone(),
                 response: run_tx,
+                logger: log_tx.clone(),
             })
             .await
             .expect("Unable to spawn task");
@@ -413,6 +439,11 @@ mod tests {
         )
         .unwrap();
 
+        let (log_tx, log_rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            start_noop_logger(log_rx).await;
+        });
+
         let (tx, rx) = mpsc::channel(100);
         tokio::spawn(async move {
             start_local_executor(10, rx).await;
@@ -425,6 +456,7 @@ mod tests {
             task_id: 0,
             task: task.clone(),
             response: run_tx,
+            logger: log_tx,
         })
         .await
         .expect("Unable to spawn task");
