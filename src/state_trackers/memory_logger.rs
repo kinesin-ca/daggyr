@@ -243,7 +243,6 @@ mod tests {
                 parameters: Parameters::new(),
                 response: tx,
             })
-            .await
             .unwrap();
         let run_id = rx
             .await
@@ -257,7 +256,6 @@ mod tests {
                 run_id: run_id,
                 response: tx,
             })
-            .await
             .unwrap();
         let state_change = rx.await.unwrap().unwrap();
         assert_eq!(State::Queued, state_change.state);

@@ -129,3 +129,11 @@ pub enum ExecutorMessage {
     },
     Stop {},
 }
+
+/// Message used to report on the completion of a task
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AttemptReport {
+    pub run_id: RunID,
+    pub task_id: TaskID,
+    pub attempt: TaskAttempt,
+}

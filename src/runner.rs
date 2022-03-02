@@ -525,7 +525,6 @@ mod tests {
                 logger: log_tx.clone(),
                 executor: exe_tx.clone(),
             })
-            .await
             .unwrap();
 
         let run_id = rx.await.unwrap().unwrap();
@@ -539,7 +538,6 @@ mod tests {
                     run_id,
                     response: tx,
                 })
-                .await
                 .unwrap();
             let state_change = rx.await.unwrap().unwrap();
 
@@ -551,8 +549,8 @@ mod tests {
         }
 
         // Close off everything except the logger
-        exe_tx.send(ExecutorMessage::Stop {}).await.unwrap();
-        run_tx.send(RunnerMessage::Stop {}).await.unwrap();
+        exe_tx.send(ExecutorMessage::Stop {}).unwrap();
+        run_tx.send(RunnerMessage::Stop {}).unwrap();
 
         (run_id, log_tx)
     }
@@ -597,7 +595,6 @@ mod tests {
                     task_id: tid,
                     response: tx,
                 })
-                .await
                 .unwrap();
 
             let task_record = rx.await.unwrap().unwrap();
@@ -610,7 +607,7 @@ mod tests {
         }
 
         // Close off logger
-        log_tx.send(LoggerMessage::Stop {}).await.unwrap();
+        log_tx.send(LoggerMessage::Stop {}).unwrap();
     }
 
     #[tokio::test]
@@ -654,7 +651,6 @@ mod tests {
                     task_id: tid,
                     response: tx,
                 })
-                .await
                 .unwrap();
 
             let task_record = rx.await.unwrap().unwrap();
@@ -679,7 +675,7 @@ mod tests {
             }
         }
 
-        log_tx.send(LoggerMessage::Stop {}).await.unwrap();
+        log_tx.send(LoggerMessage::Stop {}).unwrap();
     }
 
     #[tokio::test]
@@ -735,7 +731,6 @@ mod tests {
                     task_id: tid,
                     response: tx,
                 })
-                .await
                 .unwrap();
 
             let task_record = rx.await.unwrap().unwrap();
@@ -749,6 +744,6 @@ mod tests {
         }
 
         // Close off everything
-        log_tx.send(LoggerMessage::Stop {}).await.unwrap();
+        log_tx.send(LoggerMessage::Stop {}).unwrap();
     }
 }

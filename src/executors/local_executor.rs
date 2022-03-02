@@ -264,7 +264,6 @@ mod tests {
             response: run_tx,
             logger: log_tx,
         })
-        .await
         .expect("Unable to spawn task");
 
         match run_rx
@@ -320,14 +319,12 @@ mod tests {
             response: run_tx,
             logger: log_tx,
         })
-        .await
         .expect("Unable to spawn task");
 
         tx.send(ExecutorMessage::StopTask {
             run_id: 0,
             task_id: 0,
         })
-        .await
         .expect("Unable to stop task");
 
         match run_rx
@@ -387,7 +384,6 @@ mod tests {
                 response: run_tx,
                 logger: log_tx.clone(),
             })
-            .await
             .expect("Unable to spawn task");
             chans.push(run_rx);
         }
@@ -457,7 +453,6 @@ mod tests {
             response: run_tx,
             logger: log_tx,
         })
-        .await
         .expect("Unable to spawn task");
 
         let report = run_rx.recv().await.expect("Unable to recv");

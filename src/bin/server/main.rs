@@ -175,30 +175,20 @@ async fn get_run_task(
     }
 }
 
-/*
 async fn submit_task_attempt(
-    payload: web::Json<messages::TaskReportPayload>,
+    payload: web::Json<AttemptReport>,
     data: web::Data<AppState>,
 ) -> impl Responder {
-    use messages::TaskReport::*;
-    let msg = match payload.report.clone() {
-        ExecutionReport {
-            run_id,
-            task_id,
-            attempt,
-        } => RunnerMessage::ExecutionReport {
-            run_id,
-            task_id,
-            attempt: attempt.clone(),
-        },
-        KilledTaskReport { run_id, task_id } => RunnerMessage::KilledTaskReport { run_id, task_id },
-    };
-
-    data.run_tx.send(msg).unwrap();
+    data.run_tx
+        .send(RunnerMessage::ExecutionReport {
+            run_id: payload.run_id,
+            task_id: payload.task_id,
+            attempt: payload.attempt.clone(),
+        })
+        .unwrap();
 
     HttpResponse::Ok()
 }
-*/
 
 async fn stop_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Responder {
     let run_id = path.into_inner();
@@ -317,7 +307,7 @@ async fn main() -> std::io::Result<()> {
             ))
             .app_data(json_config)
             .route("/ready", web::get().to(ready))
-            // .route("/task/attempt", web::post().to(submit_task_attempt))
+            .route("/task/attempt", web::post().to(submit_task_attempt))
             .service(
                 web::scope("/api/v1/runs")
                     .route("", web::get().to(get_runs))
