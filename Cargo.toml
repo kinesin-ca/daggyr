@@ -19,9 +19,9 @@ actix-web = "4"
 actix-cors = "0.6"
 env_logger = "0.9"
 reqwest = { version = "0.11", features = ["json"] }
-sysinfo = "0.23"
-users = "0.11"
+sysinfo = { version = "0.23", optional = true }
+users = { version = "0.11", optional = true }
 
 [features]
-slurm = []
+slurm = ["sysinfo", "users"]
 all = ["slurm"]

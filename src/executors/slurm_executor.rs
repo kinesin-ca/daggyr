@@ -446,17 +446,17 @@ pub async fn start_slurm_executor(
 mod tests {
     use super::*;
 
-    use std::process::Command;
+    use tokio::process::Command;
     use users::get_current_username;
 
-    #[tokio::test]
-    async fn test_basic_submission() {
+    async fn get_userinfo() -> (String, String) {
         let osuser = get_current_username().unwrap();
         let user = osuser.to_string_lossy().clone();
 
         let output = Command::new("scontrol")
             .arg("token")
             .output()
+            .await
             .expect("Failed to execute scontrol to obtain token");
 
         let result = String::from_utf8_lossy(&output.stdout);
@@ -466,6 +466,12 @@ mod tests {
             .expect("Unable to get token for slurm")
             .trim();
 
+        (user.to_string(), token.to_string())
+    }
+
+    #[tokio::test]
+    async fn test_basic_submission() {
+        let (user, token) = get_userinfo().await;
         let base_url = "http://localhost:6820/slurm/v0.0.36".to_owned();
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
@@ -521,22 +527,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_job() {
-        let osuser = get_current_username().unwrap();
-        let user = osuser.to_string_lossy().clone();
-
-        let output = Command::new("scontrol")
-            .arg("token")
-            .output()
-            .expect("Failed to execute scontrol to obtain token");
-
-        let result = String::from_utf8_lossy(&output.stdout);
-        let token = result
-            .split("=")
-            .nth(1)
-            .expect("Unable to acquire token from scontrol")
-            .trim();
-
+        let (user, token) = get_userinfo().await;
         let base_url = "http://localhost:6820/slurm/v0.0.36".to_owned();
+
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             start_slurm_executor(base_url, exe_rx).await;
