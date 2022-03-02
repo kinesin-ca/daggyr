@@ -491,65 +491,76 @@ pub async fn start_dag_runner(
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executors::local_executor::start_local_executor;
+    use crate::state_trackers::memory_logger::start_memory_logger;
 
-    fn run(
+    async fn run(
         tasks: &Vec<Task>,
-        expansion_values: &ExpansionValues,
-    ) -> (RunID, std::thread::JoinHandle<()>, Sender<LoggerMessage>) {
+        parameters: &Parameters,
+    ) -> (RunID, mpsc::Sender<LoggerMessage>) {
         let (log_tx, log_rx) = mpsc::channel(100);
-        let (exe_tx, exe_rx) = mpsc::channel(100);
-        let (run_tx, run_rx) = mpsc::channel(100);
+        tokio::spawn(async move {
+            start_memory_logger(log_rx).await;
+        });
 
-        let (tx, rx) = unbounded();
+        let (exe_tx, exe_rx) = mpsc::channel(100);
+        tokio::spawn(async move {
+            start_local_executor(10, exe_rx).await;
+        });
+
+        let (run_tx, run_rx) = mpsc::channel(10);
+        let rtx = run_tx.clone();
+        tokio::spawn(async move {
+            start_dag_runner(rtx, run_rx).await;
+        });
+
+        let (tx, rx) = oneshot::channel();
         run_tx
             .send(RunnerMessage::Start {
                 tags: Tags::new(),
                 tasks: tasks.clone(),
                 response: tx,
-                expansion_values: expansion_values.clone(),
+                parameters: parameters.clone(),
                 logger: log_tx.clone(),
                 executor: exe_tx.clone(),
             })
+            .await
             .unwrap();
 
-        let run_id = rx.recv().unwrap().unwrap();
+        let run_id = rx.await.unwrap().unwrap();
 
         // Need some way to get
         loop {
-            let (tx, rx) = unbounded();
+            let (tx, rx) = oneshot::channel();
 
             log_tx
-                .send(LoggerMessage::GetRunState {
-                    run_id: run_id,
+                .send(LoggerMessage::GetState {
+                    run_id,
                     response: tx,
                 })
+                .await
                 .unwrap();
-            let state_change = rx.recv().unwrap().unwrap();
+            let state_change = rx.await.unwrap().unwrap();
 
-            if state_change.state == RunState::Completed || state_change.state == RunState::Errored
-            {
+            if state_change.state == State::Completed || state_change.state == State::Errored {
                 break;
             }
 
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
         // Close off everything except the logger
-        exe_tx.send(ExecutorMessage::Stop {}).unwrap();
-        run_tx.send(RunnerMessage::Stop {}).unwrap();
+        exe_tx.send(ExecutorMessage::Stop {}).await.unwrap();
+        run_tx.send(RunnerMessage::Stop {}).await.unwrap();
 
-        runner.join().unwrap();
-        executor.join().unwrap();
-
-        (run_id, logger, log_tx)
+        (run_id, log_tx)
     }
 
-    #[test]
-    fn test_simple_dag_run() -> () {
+    #[tokio::test]
+    async fn test_simple_dag_run() -> () {
         let tasks: Vec<Task> = serde_json::from_str(
             r#"
             [
@@ -576,36 +587,36 @@ mod tests {
         )
         .unwrap();
 
-        let expansion_values = HashMap::new();
+        let parameters = HashMap::new();
 
-        let (run_id, logger, log_tx) = run(&tasks, &expansion_values);
+        let (run_id, log_tx) = run(&tasks, &parameters).await;
 
         for (tid, task) in tasks.iter().enumerate() {
-            let (tx, rx) = unbounded();
+            let (tx, rx) = oneshot::channel();
             log_tx
                 .send(LoggerMessage::GetTask {
                     run_id: run_id,
                     task_id: tid,
                     response: tx,
                 })
+                .await
                 .unwrap();
 
-            let task_record = rx.recv().unwrap().unwrap();
+            let task_record = rx.await.unwrap().unwrap();
             assert_eq!(*task, task_record.task);
             assert_eq!(task_record.attempts.len(), 1);
             assert_eq!(
                 task_record.state_changes.last().unwrap().state,
-                daggyr_core::defines::RunState::Completed
+                State::Completed
             );
         }
 
         // Close off logger
-        log_tx.send(LoggerMessage::Stop {}).unwrap();
-        logger.join().unwrap();
+        log_tx.send(LoggerMessage::Stop {}).await.unwrap();
     }
 
-    #[test]
-    fn test_failing_generating_dag_run() -> () {
+    #[tokio::test]
+    async fn test_failing_generating_dag_run() -> () {
         let tasks: Vec<Task> = serde_json::from_str(
             r#"
             [
@@ -633,21 +644,22 @@ mod tests {
         )
         .unwrap();
 
-        let expansion_values = HashMap::new();
+        let parameters = HashMap::new();
 
-        let (run_id, logger, log_tx) = run(&tasks, &expansion_values);
+        let (run_id, log_tx) = run(&tasks, &parameters).await;
 
         for (tid, task) in tasks.iter().enumerate() {
-            let (tx, rx) = unbounded();
+            let (tx, rx) = oneshot::channel();
             log_tx
                 .send(LoggerMessage::GetTask {
                     run_id: run_id,
                     task_id: tid,
                     response: tx,
                 })
+                .await
                 .unwrap();
 
-            let task_record = rx.recv().unwrap().unwrap();
+            let task_record = rx.await.unwrap().unwrap();
             assert_eq!(*task, task_record.task);
 
             match task.class.as_ref() {
@@ -655,26 +667,25 @@ mod tests {
                     assert_eq!(task_record.state_changes.len(), 3);
                     assert_eq!(
                         task_record.state_changes.last().unwrap().state,
-                        daggyr_core::defines::RunState::Errored
+                        State::Errored
                     );
                 }
                 "other_task" => {
                     assert_eq!(task_record.state_changes.len(), 1);
                     assert_eq!(
                         task_record.state_changes.last().unwrap().state,
-                        daggyr_core::defines::RunState::Queued
+                        State::Queued
                     );
                 }
                 _ => {}
             }
         }
 
-        log_tx.send(LoggerMessage::Stop {}).unwrap();
-        logger.join().unwrap();
+        log_tx.send(LoggerMessage::Stop {}).await.unwrap();
     }
 
-    #[test]
-    fn test_successful_generating_dag_run() -> () {
+    #[tokio::test]
+    async fn test_successful_generating_dag_run() -> () {
         use serde_json::json;
 
         let mut tasks: Vec<Task> = serde_json::from_str(
@@ -691,13 +702,13 @@ mod tests {
         .unwrap();
 
         let new_task = r#"[ {
-        "class": "generated_task",
-        "details": {
-                        "command": [ "/bin/echo", "hello", "world" ]
-                    }
-    }]"#;
+            "class": "generated_task",
+            "details": {
+                "command": [ "/bin/echo", "hello", "world" ]
+                }
+        }]"#;
 
-        let expansion_values = HashMap::new();
+        let parameters = HashMap::new();
 
         let mut gen_task = Task::new();
         gen_task.is_generator = true;
@@ -709,7 +720,7 @@ mod tests {
 
         tasks.push(gen_task);
 
-        let (run_id, logger, log_tx) = run(&tasks, &expansion_values);
+        let (run_id, log_tx) = run(&tasks, &parameters).await;
 
         let mut new_tasks: Vec<Task> = serde_json::from_str(new_task).unwrap();
         new_tasks[0].children.push("other_task".to_owned());
@@ -719,28 +730,27 @@ mod tests {
         assert_eq!(tasks.len(), 3);
 
         for (tid, task) in tasks.iter().enumerate() {
-            let (tx, rx) = unbounded();
+            let (tx, rx) = oneshot::channel();
             log_tx
                 .send(LoggerMessage::GetTask {
                     run_id: run_id,
                     task_id: tid,
                     response: tx,
                 })
+                .await
                 .unwrap();
 
-            let task_record = rx.recv().unwrap().unwrap();
+            let task_record = rx.await.unwrap().unwrap();
             assert_eq!(*task, task_record.task);
 
             assert_eq!(task_record.state_changes.len(), 3);
             assert_eq!(
                 task_record.state_changes.last().unwrap().state,
-                daggyr_core::defines::RunState::Completed
+                State::Completed
             );
         }
 
         // Close off everything
-        log_tx.send(LoggerMessage::Stop {}).unwrap();
-        logger.join().unwrap();
+        log_tx.send(LoggerMessage::Stop {}).await.unwrap();
     }
 }
-*/
