@@ -1,0 +1,16 @@
+- General
+  - Fix names for certain things (e.g. state_tracker vs logger)
+- Loggers
+  - Add in postgres logger
+  - General logger (env logger)
+- Binaries
+  - Add configuration support
+- Executors
+  - Add `max_cpu` and `max_rss` tracking to existing executors
+  - Add DaggyR Remote Agent
+- Add Auth
+  - Login
+  - JWT and tracking by user
+- Add Web UI
+  - [Static files](https://actix.rs/docs/static-files/)
+  - [Vue](https://vuejs.org)
