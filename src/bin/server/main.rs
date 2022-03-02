@@ -61,7 +61,6 @@ async fn get_runs(
             end_time: criteria.end_time,
             response,
         })
-        .await
         .unwrap();
 
     HttpResponse::Ok().json(rx.await.unwrap_or(Vec::new()))
@@ -79,7 +78,6 @@ async fn submit_run(spec: web::Json<RunSpec>, data: web::Data<AppState>) -> impl
             logger: data.log_tx.clone(),
             executor: data.exe_tx.clone(),
         })
-        .await
         .unwrap();
 
     match rx.await.unwrap() {
@@ -96,7 +94,6 @@ async fn get_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Resp
 
     data.log_tx
         .send(LoggerMessage::GetRun { run_id, response })
-        .await
         .unwrap();
 
     match rx.await.unwrap() {
@@ -113,7 +110,6 @@ async fn get_task_summary(path: web::Path<RunID>, data: web::Data<AppState>) -> 
 
     data.log_tx
         .send(LoggerMessage::GetTaskSummary { run_id, response })
-        .await
         .unwrap();
 
     match rx.await.unwrap() {
@@ -130,7 +126,6 @@ async fn get_run_state(path: web::Path<RunID>, data: web::Data<AppState>) -> imp
 
     data.log_tx
         .send(LoggerMessage::GetState { run_id, response })
-        .await
         .unwrap();
 
     match rx.await.unwrap() {
@@ -147,7 +142,6 @@ async fn get_run_tasks(path: web::Path<RunID>, data: web::Data<AppState>) -> imp
 
     data.log_tx
         .send(LoggerMessage::GetTaskSummary { run_id, response })
-        .await
         .unwrap();
 
     match rx.await.unwrap() {
@@ -171,7 +165,6 @@ async fn get_run_task(
             task_id,
             response,
         })
-        .await
         .unwrap();
 
     match rx.await.unwrap() {
@@ -213,7 +206,6 @@ async fn stop_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Res
 
     data.run_tx
         .send(RunnerMessage::StopRun { run_id, response })
-        .await
         .unwrap();
 
     rx.await.unwrap();
@@ -231,7 +223,6 @@ async fn retry_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Re
             executor: data.exe_tx.clone(),
             response,
         })
-        .await
         .unwrap();
 
     match rx.await.unwrap() {
@@ -247,24 +238,24 @@ async fn ready() -> impl Responder {
 }
 
 struct AppState {
-    log_tx: mpsc::Sender<LoggerMessage>,
-    exe_tx: mpsc::Sender<ExecutorMessage>,
-    run_tx: mpsc::Sender<RunnerMessage>,
+    log_tx: mpsc::UnboundedSender<LoggerMessage>,
+    exe_tx: mpsc::UnboundedSender<ExecutorMessage>,
+    run_tx: mpsc::UnboundedSender<RunnerMessage>,
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let (log_tx, log_rx) = mpsc::channel(100);
+    let (log_tx, log_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         start_memory_logger(log_rx).await;
     });
 
-    let (exe_tx, exe_rx) = mpsc::channel(100);
+    let (exe_tx, exe_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         start_local_executor(10, exe_rx).await;
     });
 
-    let (run_tx, run_rx) = mpsc::channel(10);
+    let (run_tx, run_rx) = mpsc::unbounded_channel();
     let rtx = run_tx.clone();
     tokio::spawn(async move {
         start_dag_runner(rtx, run_rx).await;
@@ -347,9 +338,9 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await;
 
-    run_tx.send(RunnerMessage::Stop {}).await.unwrap();
-    exe_tx.send(ExecutorMessage::Stop {}).await.unwrap();
-    log_tx.send(LoggerMessage::Stop {}).await.unwrap();
+    run_tx.send(RunnerMessage::Stop {}).unwrap();
+    exe_tx.send(ExecutorMessage::Stop {}).unwrap();
+    log_tx.send(LoggerMessage::Stop {}).unwrap();
 
     res
 }

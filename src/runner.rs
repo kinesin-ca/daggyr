@@ -14,9 +14,9 @@ struct Run {
     state: State,
     class_tasks: HashMap<String, HashSet<usize>>,
     parameters: Parameters,
-    logger: mpsc::Sender<LoggerMessage>,
-    executor: mpsc::Sender<ExecutorMessage>,
-    runner: mpsc::Sender<RunnerMessage>,
+    logger: mpsc::UnboundedSender<LoggerMessage>,
+    executor: mpsc::UnboundedSender<ExecutorMessage>,
+    runner: mpsc::UnboundedSender<RunnerMessage>,
 }
 
 impl Run {
@@ -24,9 +24,9 @@ impl Run {
         tags: Tags,
         tasks: Vec<Task>,
         parameters: Parameters,
-        logger: mpsc::Sender<LoggerMessage>,
-        executor: mpsc::Sender<ExecutorMessage>,
-        runner: mpsc::Sender<RunnerMessage>,
+        logger: mpsc::UnboundedSender<LoggerMessage>,
+        executor: mpsc::UnboundedSender<ExecutorMessage>,
+        runner: mpsc::UnboundedSender<RunnerMessage>,
     ) -> Result<Self> {
         let mut run = Run {
             run_id: 0,
@@ -48,7 +48,7 @@ impl Run {
                 parameters: run.parameters.clone(),
                 response: tx,
             })
-            .await?;
+            .unwrap();
         let tasks = rx.await??;
 
         run.add_tasks(&tasks)?;
@@ -61,7 +61,7 @@ impl Run {
                 parameters: run.parameters.clone(),
                 response: tx,
             })
-            .await?;
+            .unwrap();
         run.run_id = rx.await??;
 
         // Let the logger know
@@ -71,7 +71,7 @@ impl Run {
                 tasks: tasks,
                 offset: 0,
             })
-            .await?;
+            .unwrap();
 
         run.update_state(State::Running).await?;
 
@@ -82,9 +82,9 @@ impl Run {
     /// to get it ready to run
     async fn from_logger(
         run_id: RunID,
-        logger: mpsc::Sender<LoggerMessage>,
-        executor: mpsc::Sender<ExecutorMessage>,
-        runner: mpsc::Sender<RunnerMessage>,
+        logger: mpsc::UnboundedSender<LoggerMessage>,
+        executor: mpsc::UnboundedSender<ExecutorMessage>,
+        runner: mpsc::UnboundedSender<RunnerMessage>,
     ) -> Result<Self> {
         let (tx, rx) = oneshot::channel();
         logger
@@ -92,7 +92,7 @@ impl Run {
                 run_id,
                 response: tx,
             })
-            .await?;
+            .unwrap();
         let run_record = rx.await??;
 
         // Build the set of tasks and states
@@ -138,7 +138,7 @@ impl Run {
                     task_id,
                     state: *state,
                 })
-                .await?
+                .unwrap();
         }
 
         run.update_state(State::Running).await?;
@@ -151,7 +151,7 @@ impl Run {
                 run_id: self.run_id,
                 state: state,
             })
-            .await?;
+            .unwrap();
         self.state = state;
         Ok(())
     }
@@ -243,7 +243,6 @@ impl Run {
                     run_id: self.run_id,
                     state: self.state,
                 })
-                .await
                 .unwrap_or(());
             return self.state;
         }
@@ -261,7 +260,6 @@ impl Run {
                             response: self.runner.clone(),
                             logger: self.logger.clone(),
                         })
-                        .await
                         .unwrap_or(());
                     // TODO this should probably be an error
                 }
@@ -289,7 +287,7 @@ impl Run {
                 parameters: self.parameters.clone(),
                 response: tx,
             })
-            .await?;
+            .unwrap();
         let mut exp_tasks = rx.await??;
         let children = self.tasks[task_id].children.clone();
         let parents = vec![self.tasks[task_id].class.clone()];
@@ -309,7 +307,7 @@ impl Run {
                 tasks: exp_tasks,
                 offset: offset,
             })
-            .await?;
+            .unwrap();
         Ok(())
     }
 
@@ -321,14 +319,14 @@ impl Run {
                         run_id: self.run_id,
                         task_id,
                     })
-                    .await?;
+                    .unwrap();
                 self.logger
                     .send(LoggerMessage::UpdateTaskState {
                         run_id: self.run_id,
                         task_id: task_id,
                         state: State::Killed,
                     })
-                    .await?;
+                    .unwrap();
             }
         }
         self.logger
@@ -336,7 +334,7 @@ impl Run {
                 run_id: self.run_id,
                 state: State::Killed,
             })
-            .await?;
+            .unwrap();
         Ok(())
     }
 
@@ -352,7 +350,7 @@ impl Run {
                 task_id: task_id,
                 state: State::Killed,
             })
-            .await?;
+            .unwrap();
         Ok(())
     }
 
@@ -363,7 +361,7 @@ impl Run {
                 task_id,
                 attempt: attempt.clone(),
             })
-            .await?;
+            .unwrap();
 
         let mut new_state = if attempt.succeeded {
             State::Completed
@@ -386,7 +384,7 @@ impl Run {
                         task_id: task_id,
                         attempt: generator_attempt,
                     })
-                    .await?;
+                    .unwrap();
             }
         }
 
@@ -397,7 +395,7 @@ impl Run {
                 task_id: task_id,
                 state: new_state,
             })
-            .await?;
+            .unwrap();
 
         self.dag
             .complete_visit(task_id, new_state != State::Completed);
@@ -406,8 +404,8 @@ impl Run {
 }
 
 pub async fn start_dag_runner(
-    msg_tx: mpsc::Sender<RunnerMessage>,
-    mut msg_rx: mpsc::Receiver<RunnerMessage>,
+    msg_tx: mpsc::UnboundedSender<RunnerMessage>,
+    mut msg_rx: mpsc::UnboundedReceiver<RunnerMessage>,
 ) {
     let mut runs = HashMap::<RunID, Run>::new();
 
@@ -500,18 +498,18 @@ mod tests {
     async fn run(
         tasks: &Vec<Task>,
         parameters: &Parameters,
-    ) -> (RunID, mpsc::Sender<LoggerMessage>) {
-        let (log_tx, log_rx) = mpsc::channel(100);
+    ) -> (RunID, mpsc::UnboundedSender<LoggerMessage>) {
+        let (log_tx, log_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             start_memory_logger(log_rx).await;
         });
 
-        let (exe_tx, exe_rx) = mpsc::channel(100);
+        let (exe_tx, exe_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             start_local_executor(10, exe_rx).await;
         });
 
-        let (run_tx, run_rx) = mpsc::channel(10);
+        let (run_tx, run_rx) = mpsc::unbounded_channel();
         let rtx = run_tx.clone();
         tokio::spawn(async move {
             start_dag_runner(rtx, run_rx).await;

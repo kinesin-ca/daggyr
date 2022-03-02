@@ -2,7 +2,7 @@ use super::*;
 use crate::structs::*;
 use tokio::sync::mpsc;
 
-pub async fn start_local_executor(mut exe_msgs: mpsc::Receiver<ExecutorMessage>) {
+pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>) {
     while let Some(msg) = exe_msgs.recv().await {
         use ExecutorMessage::*;
 
@@ -24,7 +24,6 @@ pub async fn start_local_executor(mut exe_msgs: mpsc::Receiver<ExecutorMessage>)
                         task_id: task_id,
                         state: State::Running,
                     })
-                    .await
                     .unwrap_or(());
                 let mut attempt = TaskAttempt::new();
                 attempt.succeeded = true;
@@ -34,7 +33,6 @@ pub async fn start_local_executor(mut exe_msgs: mpsc::Receiver<ExecutorMessage>)
                         task_id,
                         attempt,
                     })
-                    .await
                     .unwrap_or(());
             }
             StopTask { .. } => {}
