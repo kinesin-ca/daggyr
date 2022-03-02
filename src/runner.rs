@@ -314,12 +314,15 @@ impl Run {
     async fn stop(&mut self) -> Result<()> {
         for (task_id, vertex) in self.dag.vertices.iter().enumerate() {
             if vertex.state == State::Running {
+                let (response, cancel_rx) = oneshot::channel();
                 self.executor
                     .send(ExecutorMessage::StopTask {
                         run_id: self.run_id,
                         task_id,
+                        response,
                     })
                     .unwrap();
+                cancel_rx.await.unwrap_or(());
                 self.logger
                     .send(LoggerMessage::UpdateTaskState {
                         run_id: self.run_id,

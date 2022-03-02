@@ -215,10 +215,15 @@ pub async fn start_local_executor(
                         .unwrap();
                 }));
             }
-            StopTask { run_id, task_id } => {
+            StopTask {
+                run_id,
+                task_id,
+                response,
+            } => {
                 if let Some(tx) = task_channels.remove(&(run_id, task_id)) {
                     tx.send(()).unwrap_or(());
                 }
+                response.send(()).unwrap_or(());
             }
             Stop {} => {
                 break;
@@ -321,11 +326,14 @@ mod tests {
         })
         .expect("Unable to spawn task");
 
+        let (response, cancel_rx) = oneshot::channel();
         tx.send(ExecutorMessage::StopTask {
             run_id: 0,
             task_id: 0,
+            response,
         })
         .expect("Unable to stop task");
+        cancel_rx.await.unwrap();
 
         match run_rx
             .recv()

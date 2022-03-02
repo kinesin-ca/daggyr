@@ -126,6 +126,7 @@ pub enum ExecutorMessage {
     StopTask {
         run_id: RunID,
         task_id: TaskID,
+        response: oneshot::Sender<()>,
     },
     Stop {},
 }

@@ -429,11 +429,16 @@ pub async fn start_slurm_executor(
                     }
                 }
             }
-            StopTask { run_id, task_id } => {
+            StopTask {
+                run_id,
+                task_id,
+                response,
+            } => {
                 let taskid = (run_id, task_id);
                 if let Some(channel) = running_tasks.remove(&taskid) {
                     channel.send(JobEvent::Kill).unwrap_or(());
                 }
+                response.send(()).unwrap_or(());
             }
             Stop {} => {
                 break;
@@ -568,13 +573,16 @@ mod tests {
         sleep(Duration::from_secs(2)).await;
 
         // Cancel
-        // let (cancel_tx, cancel_rx) = oneshot::channel();
+        let (cancel_tx, cancel_rx) = oneshot::channel();
         exe_tx
             .send(ExecutorMessage::StopTask {
-                run_id: run_id,
+                run_id,
                 task_id: 0,
+                response: cancel_tx,
             })
             .unwrap();
+
+        cancel_rx.await.unwrap();
 
         match rx.recv().await.unwrap() {
             RunnerMessage::ExecutionReport { attempt, .. } => {
