@@ -5,5 +5,5 @@ pub use crate::structs::*;
 // Executors
 pub use crate::executors::local_executor;
 
-// Loggers
-pub use crate::state_trackers::memory_logger;
+// Trackers
+pub use crate::trackers::memory_tracker;

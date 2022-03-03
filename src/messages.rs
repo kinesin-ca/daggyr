@@ -2,7 +2,7 @@ use crate::structs::*;
 use crate::Result;
 use tokio::sync::{mpsc, oneshot};
 #[derive(Debug)]
-pub enum LoggerMessage {
+pub enum TrackerMessage {
     // Creation
     CreateRun {
         tags: Tags,
@@ -83,13 +83,13 @@ pub enum RunnerMessage {
         tags: Tags,
         tasks: Vec<Task>,
         parameters: Parameters,
-        logger: mpsc::UnboundedSender<LoggerMessage>,
+        tracker: mpsc::UnboundedSender<TrackerMessage>,
         executor: mpsc::UnboundedSender<ExecutorMessage>,
         response: oneshot::Sender<Result<RunID>>,
     },
     Retry {
         run_id: RunID,
-        logger: mpsc::UnboundedSender<LoggerMessage>,
+        tracker: mpsc::UnboundedSender<TrackerMessage>,
         executor: mpsc::UnboundedSender<ExecutorMessage>,
         response: oneshot::Sender<Result<()>>,
     },
@@ -121,7 +121,7 @@ pub enum ExecutorMessage {
         task_id: TaskID,
         task: Task,
         response: mpsc::UnboundedSender<RunnerMessage>,
-        logger: mpsc::UnboundedSender<LoggerMessage>,
+        tracker: mpsc::UnboundedSender<TrackerMessage>,
     },
     StopTask {
         run_id: RunID,

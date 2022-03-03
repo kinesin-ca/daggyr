@@ -58,7 +58,7 @@ async fn get_runs(
     let (response, rx) = oneshot::channel();
 
     data.log_tx
-        .send(LoggerMessage::GetRuns {
+        .send(TrackerMessage::GetRuns {
             tags: criteria.tags.clone(),
             states: criteria.states.clone(),
             start_time: criteria.start_time,
@@ -79,7 +79,7 @@ async fn submit_run(spec: web::Json<RunSpec>, data: web::Data<AppState>) -> impl
             tasks: spec.tasks.clone(),
             response: tx,
             parameters: spec.parameters.clone(),
-            logger: data.log_tx.clone(),
+            tracker: data.log_tx.clone(),
             executor: data.exe_tx.clone(),
         })
         .unwrap();
@@ -97,7 +97,7 @@ async fn get_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Resp
     let (response, rx) = oneshot::channel();
 
     data.log_tx
-        .send(LoggerMessage::GetRun { run_id, response })
+        .send(TrackerMessage::GetRun { run_id, response })
         .unwrap();
 
     match rx.await.unwrap() {
@@ -113,7 +113,7 @@ async fn get_task_summary(path: web::Path<RunID>, data: web::Data<AppState>) -> 
     let (response, rx) = oneshot::channel();
 
     data.log_tx
-        .send(LoggerMessage::GetTaskSummary { run_id, response })
+        .send(TrackerMessage::GetTaskSummary { run_id, response })
         .unwrap();
 
     match rx.await.unwrap() {
@@ -129,7 +129,7 @@ async fn get_run_state(path: web::Path<RunID>, data: web::Data<AppState>) -> imp
     let (response, rx) = oneshot::channel();
 
     data.log_tx
-        .send(LoggerMessage::GetState { run_id, response })
+        .send(TrackerMessage::GetState { run_id, response })
         .unwrap();
 
     match rx.await.unwrap() {
@@ -145,7 +145,7 @@ async fn get_run_tasks(path: web::Path<RunID>, data: web::Data<AppState>) -> imp
     let (response, rx) = oneshot::channel();
 
     data.log_tx
-        .send(LoggerMessage::GetTaskSummary { run_id, response })
+        .send(TrackerMessage::GetTaskSummary { run_id, response })
         .unwrap();
 
     match rx.await.unwrap() {
@@ -164,7 +164,7 @@ async fn get_run_task(
     let (response, rx) = oneshot::channel();
 
     data.log_tx
-        .send(LoggerMessage::GetTask {
+        .send(TrackerMessage::GetTask {
             run_id,
             task_id,
             response,
@@ -213,7 +213,7 @@ async fn retry_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Re
     data.run_tx
         .send(RunnerMessage::Retry {
             run_id,
-            logger: data.log_tx.clone(),
+            tracker: data.log_tx.clone(),
             executor: data.exe_tx.clone(),
             response,
         })
@@ -232,13 +232,13 @@ async fn ready() -> impl Responder {
 }
 
 struct AppState {
-    log_tx: mpsc::UnboundedSender<LoggerMessage>,
+    log_tx: mpsc::UnboundedSender<TrackerMessage>,
     exe_tx: mpsc::UnboundedSender<ExecutorMessage>,
     run_tx: mpsc::UnboundedSender<RunnerMessage>,
 }
 
 fn init() -> (
-    mpsc::UnboundedSender<LoggerMessage>,
+    mpsc::UnboundedSender<TrackerMessage>,
     mpsc::UnboundedSender<ExecutorMessage>,
     mpsc::UnboundedSender<RunnerMessage>,
 ) {
@@ -251,7 +251,7 @@ fn init() -> (
     // Tracker
     let tracker = env::var("DAGGYR_TRACKER").unwrap_or("memory".to_owned());
     match tracker.as_ref() {
-        "memory" => memory_logger::start(log_rx),
+        "memory" => memory_tracker::start(log_rx),
         _ => panic!("Unknown tracker: {}", tracker),
     };
 
@@ -357,7 +357,7 @@ async fn main() -> std::io::Result<()> {
 
     run_tx.send(RunnerMessage::Stop {}).unwrap();
     exe_tx.send(ExecutorMessage::Stop {}).unwrap();
-    log_tx.send(LoggerMessage::Stop {}).unwrap();
+    log_tx.send(TrackerMessage::Stop {}).unwrap();
 
     res
 }

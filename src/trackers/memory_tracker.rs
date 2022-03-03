@@ -13,17 +13,17 @@ fn range_checker(runs: &Vec<RunRecord>, run_id: RunID, task_id: Option<TaskID>) 
     }
 }
 
-pub fn start(msgs: mpsc::UnboundedReceiver<LoggerMessage>) {
+pub fn start(msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     tokio::spawn(async move {
-        start_memory_logger(msgs).await;
+        start_memory_tracker(msgs).await;
     });
 }
 
-pub async fn start_memory_logger(mut msgs: mpsc::UnboundedReceiver<LoggerMessage>) {
+pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     let mut runs: Vec<RunRecord> = vec![];
 
     while let Some(msg) = msgs.recv().await {
-        use LoggerMessage::*;
+        use TrackerMessage::*;
 
         match msg {
             CreateRun {
@@ -235,15 +235,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_create() {
-        let (log_tx, log_rx) = mpsc::unbounded_channel();
+        let (trx_tx, trx_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
-            start_memory_logger(log_rx).await;
+            start_memory_tracker(trx_rx).await;
         });
 
-        use LoggerMessage::*;
+        use TrackerMessage::*;
 
         let (tx, rx) = oneshot::channel();
-        log_tx
+        trx_tx
             .send(CreateRun {
                 tags: HashSet::new(),
                 parameters: Parameters::new(),
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(run_id, 0);
 
         let (tx, rx) = oneshot::channel();
-        log_tx
+        trx_tx
             .send(GetState {
                 run_id: run_id,
                 response: tx,

@@ -1,6 +1,6 @@
 - General
   - Fix names for certain things (e.g. state_tracker vs logger)
-- Loggers
+- Trackers
   - Add in postgres logger
   - General logger (env logger)
 - Binaries

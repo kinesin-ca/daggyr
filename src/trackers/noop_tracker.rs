@@ -1,15 +1,15 @@
 use crate::messages::*;
 use tokio::sync::mpsc;
 
-pub fn start(msgs: mpsc::UnboundedReceiver<LoggerMessage>) {
+pub fn start(msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     tokio::spawn(async move {
-        start_noop_logger(msgs).await;
+        start_noop_tracker(msgs).await;
     });
 }
 
-pub async fn start_noop_logger(mut msgs: mpsc::UnboundedReceiver<LoggerMessage>) {
+pub async fn start_noop_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     while let Some(msg) = msgs.recv().await {
-        use LoggerMessage::*;
+        use TrackerMessage::*;
 
         match msg {
             CreateRun { response, .. } => {
@@ -21,32 +21,32 @@ pub async fn start_noop_logger(mut msgs: mpsc::UnboundedReceiver<LoggerMessage>)
             }
             GetRun { response, .. } => {
                 response
-                    .send(Err(anyhow!("Noop logger does not support queries")))
+                    .send(Err(anyhow!("Noop tracker does not support queries")))
                     .unwrap_or(());
             }
             GetState { response, .. } => {
                 response
-                    .send(Err(anyhow!("Noop logger does not support queries")))
+                    .send(Err(anyhow!("Noop tracker does not support queries")))
                     .unwrap_or(());
             }
             GetStateUpdates { response, .. } => {
                 response
-                    .send(Err(anyhow!("Noop logger does not support queries")))
+                    .send(Err(anyhow!("Noop tracker does not support queries")))
                     .unwrap_or(());
             }
             GetTaskSummary { response, .. } => {
                 response
-                    .send(Err(anyhow!("Noop logger does not support queries")))
+                    .send(Err(anyhow!("Noop tracker does not support queries")))
                     .unwrap_or(());
             }
             GetTasks { response, .. } => {
                 response
-                    .send(Err(anyhow!("Noop logger does not support queries")))
+                    .send(Err(anyhow!("Noop tracker does not support queries")))
                     .unwrap_or(());
             }
             GetTask { response, .. } => {
                 response
-                    .send(Err(anyhow!("Noop logger does not support queries")))
+                    .send(Err(anyhow!("Noop tracker does not support queries")))
                     .unwrap_or(());
             }
             Stop {} => break,
@@ -61,15 +61,15 @@ mod tests {
     use super::*;
 
     fn test_memory_create() {
-        let (log_tx, log_rx) = unbounded();
+        let (trx_tx, trx_rx) = unbounded();
         tokio::spawn(async move {
-            memory_logger(log_rx).await;
+            memory_tracker(trx_rx).await;
         });
 
-        use LoggerMessage::*;
+        use TrackerMessage::*;
 
         let (tx, rx) = oneshot::channel();
-        log_tx.send(CreateRun { response: tx }).await.unwrap();
+        trx_tx.send(CreateRun { response: tx }).await.unwrap();
         let run_id = rx
             .await
             .expect("Receive error")
@@ -77,7 +77,7 @@ mod tests {
         assert_eq!(run_id, 0);
 
         let (tx, rx) = oneshot::channel();
-        log_tx
+        trx_tx
             .send(GetRunState {
                 run_id: run_id,
                 response: tx,

@@ -393,7 +393,7 @@ pub async fn start_slurm_executor(
                 task_id,
                 task,
                 response,
-                logger,
+                tracker,
             } => {
                 let task_name = format!("{}_{}_{}", run_id, task.class, task.instance);
 
@@ -407,8 +407,8 @@ pub async fn start_slurm_executor(
                             )
                             .await
                         });
-                        logger
-                            .send(LoggerMessage::UpdateTaskState {
+                        tracker
+                            .send(TrackerMessage::UpdateTaskState {
                                 run_id: run_id,
                                 task_id: task_id,
                                 state: State::Running,
@@ -511,7 +511,7 @@ mod tests {
                 task_id: 0,
                 task: task,
                 response: tx,
-                logger: log_tx,
+                tracker: log_tx,
             })
             .unwrap();
 
@@ -565,7 +565,7 @@ mod tests {
                 task_id: 0,
                 task: task.clone(),
                 response: tx,
-                logger: log_tx,
+                tracker: log_tx,
             })
             .unwrap();
 

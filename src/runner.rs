@@ -14,7 +14,7 @@ struct Run {
     state: State,
     class_tasks: HashMap<String, HashSet<usize>>,
     parameters: Parameters,
-    logger: mpsc::UnboundedSender<LoggerMessage>,
+    tracker: mpsc::UnboundedSender<TrackerMessage>,
     executor: mpsc::UnboundedSender<ExecutorMessage>,
     runner: mpsc::UnboundedSender<RunnerMessage>,
 }
@@ -24,7 +24,7 @@ impl Run {
         tags: Tags,
         tasks: Vec<Task>,
         parameters: Parameters,
-        logger: mpsc::UnboundedSender<LoggerMessage>,
+        tracker: mpsc::UnboundedSender<TrackerMessage>,
         executor: mpsc::UnboundedSender<ExecutorMessage>,
         runner: mpsc::UnboundedSender<RunnerMessage>,
     ) -> Result<Self> {
@@ -35,7 +35,7 @@ impl Run {
             state: State::Queued,
             class_tasks: HashMap::new(),
             parameters,
-            logger: logger.clone(),
+            tracker: tracker.clone(),
             executor,
             runner,
         };
@@ -53,10 +53,10 @@ impl Run {
 
         run.add_tasks(&tasks)?;
 
-        // Create the run ID and update the logger
+        // Create the run ID and update the tracker
         let (tx, rx) = oneshot::channel();
-        logger
-            .send(LoggerMessage::CreateRun {
+        tracker
+            .send(TrackerMessage::CreateRun {
                 tags,
                 parameters: run.parameters.clone(),
                 response: tx,
@@ -64,9 +64,9 @@ impl Run {
             .unwrap();
         run.run_id = rx.await??;
 
-        // Let the logger know
-        run.logger
-            .send(LoggerMessage::AddTasks {
+        // Let the tracker know
+        run.tracker
+            .send(TrackerMessage::AddTasks {
                 run_id: run.run_id,
                 tasks: tasks,
                 offset: 0,
@@ -78,17 +78,17 @@ impl Run {
         Ok(run)
     }
 
-    /// Retrieve an existing run from the logger and reset it
+    /// Retrieve an existing run from the tracker and reset it
     /// to get it ready to run
-    async fn from_logger(
+    async fn from_tracker(
         run_id: RunID,
-        logger: mpsc::UnboundedSender<LoggerMessage>,
+        tracker: mpsc::UnboundedSender<TrackerMessage>,
         executor: mpsc::UnboundedSender<ExecutorMessage>,
         runner: mpsc::UnboundedSender<RunnerMessage>,
     ) -> Result<Self> {
         let (tx, rx) = oneshot::channel();
-        logger
-            .send(LoggerMessage::GetRun {
+        tracker
+            .send(TrackerMessage::GetRun {
                 run_id,
                 response: tx,
             })
@@ -122,7 +122,7 @@ impl Run {
             state: State::Running,
             class_tasks: HashMap::new(),
             parameters: run_record.parameters,
-            logger,
+            tracker,
             executor,
             runner,
         };
@@ -132,8 +132,8 @@ impl Run {
         // Update the task states
         for (task_id, state) in states.iter().enumerate() {
             run.dag.set_vertex_state(task_id, *state)?;
-            run.logger
-                .send(LoggerMessage::UpdateTaskState {
+            run.tracker
+                .send(TrackerMessage::UpdateTaskState {
                     run_id: run.run_id,
                     task_id,
                     state: *state,
@@ -146,8 +146,8 @@ impl Run {
     }
 
     async fn update_state(&mut self, state: State) -> Result<()> {
-        self.logger
-            .send(LoggerMessage::UpdateState {
+        self.tracker
+            .send(TrackerMessage::UpdateState {
                 run_id: self.run_id,
                 state: state,
             })
@@ -238,8 +238,8 @@ impl Run {
                 State::Errored
             };
 
-            self.logger
-                .send(LoggerMessage::UpdateState {
+            self.tracker
+                .send(TrackerMessage::UpdateState {
                     run_id: self.run_id,
                     state: self.state,
                 })
@@ -258,7 +258,7 @@ impl Run {
                             task_id: task_id,
                             task: self.tasks[task_id].clone(),
                             response: self.runner.clone(),
-                            logger: self.logger.clone(),
+                            tracker: self.tracker.clone(),
                         })
                         .unwrap_or(());
                     // TODO this should probably be an error
@@ -300,9 +300,9 @@ impl Run {
         let offset = self.tasks.len();
         self.add_tasks(&exp_tasks)?;
 
-        // Let the logger know
-        self.logger
-            .send(LoggerMessage::AddTasks {
+        // Let the tracker know
+        self.tracker
+            .send(TrackerMessage::AddTasks {
                 run_id: self.run_id,
                 tasks: exp_tasks,
                 offset: offset,
@@ -323,8 +323,8 @@ impl Run {
                     })
                     .unwrap();
                 cancel_rx.await.unwrap_or(());
-                self.logger
-                    .send(LoggerMessage::UpdateTaskState {
+                self.tracker
+                    .send(TrackerMessage::UpdateTaskState {
                         run_id: self.run_id,
                         task_id: task_id,
                         state: State::Killed,
@@ -332,8 +332,8 @@ impl Run {
                     .unwrap();
             }
         }
-        self.logger
-            .send(LoggerMessage::UpdateState {
+        self.tracker
+            .send(TrackerMessage::UpdateState {
                 run_id: self.run_id,
                 state: State::Killed,
             })
@@ -347,8 +347,8 @@ impl Run {
         }
 
         self.dag.set_vertex_state(task_id, State::Killed).unwrap();
-        self.logger
-            .send(LoggerMessage::UpdateTaskState {
+        self.tracker
+            .send(TrackerMessage::UpdateTaskState {
                 run_id: self.run_id,
                 task_id: task_id,
                 state: State::Killed,
@@ -358,8 +358,8 @@ impl Run {
     }
 
     async fn complete_task(&mut self, task_id: TaskID, attempt: TaskAttempt) -> Result<()> {
-        self.logger
-            .send(LoggerMessage::LogTaskAttempt {
+        self.tracker
+            .send(TrackerMessage::LogTaskAttempt {
                 run_id: self.run_id,
                 task_id,
                 attempt: attempt.clone(),
@@ -381,8 +381,8 @@ impl Run {
                 new_state = State::Errored;
                 let mut generator_attempt = TaskAttempt::new();
                 generator_attempt.executor.push(format!("{:?}", e));
-                self.logger
-                    .send(LoggerMessage::LogTaskAttempt {
+                self.tracker
+                    .send(TrackerMessage::LogTaskAttempt {
                         run_id: self.run_id,
                         task_id: task_id,
                         attempt: generator_attempt,
@@ -392,8 +392,8 @@ impl Run {
         }
 
         // Update the state
-        self.logger
-            .send(LoggerMessage::UpdateTaskState {
+        self.tracker
+            .send(TrackerMessage::UpdateTaskState {
                 run_id: self.run_id,
                 task_id: task_id,
                 state: new_state,
@@ -429,11 +429,11 @@ async fn start_dag_runner(
                 tasks,
                 response,
                 parameters,
-                logger,
+                tracker,
                 executor,
             } => {
                 // Queue all pending tasks
-                match Run::new(tags, tasks, parameters, logger, executor, msg_tx.clone()).await {
+                match Run::new(tags, tasks, parameters, tracker, executor, msg_tx.clone()).await {
                     Ok(mut run) => {
                         let run_id = run.run_id;
 
@@ -460,7 +460,7 @@ async fn start_dag_runner(
             },
             Retry {
                 run_id,
-                logger,
+                tracker,
                 executor,
                 response,
             } => {
@@ -469,7 +469,7 @@ async fn start_dag_runner(
                         .send(Err(anyhow!("Run ID is currently running, cannot retry.")))
                         .unwrap_or(());
                 } else {
-                    match Run::from_logger(run_id, logger, executor, msg_tx.clone()).await {
+                    match Run::from_tracker(run_id, tracker, executor, msg_tx.clone()).await {
                         Ok(mut run) => {
                             if run.run().await == State::Running {
                                 runs.insert(run_id, run);
@@ -505,14 +505,14 @@ async fn start_dag_runner(
 mod tests {
     use super::*;
     use crate::executors::local_executor;
-    use crate::state_trackers::memory_logger;
+    use crate::trackers::memory_tracker;
 
     async fn run(
         tasks: &Vec<Task>,
         parameters: &Parameters,
-    ) -> (RunID, mpsc::UnboundedSender<LoggerMessage>) {
+    ) -> (RunID, mpsc::UnboundedSender<TrackerMessage>) {
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        memory_logger::start(log_rx);
+        memory_tracker::start(log_rx);
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
         local_executor::start(10, exe_rx);
@@ -528,7 +528,7 @@ mod tests {
                 tasks: tasks.clone(),
                 response: tx,
                 parameters: parameters.clone(),
-                logger: log_tx.clone(),
+                tracker: log_tx.clone(),
                 executor: exe_tx.clone(),
             })
             .unwrap();
@@ -540,7 +540,7 @@ mod tests {
             let (tx, rx) = oneshot::channel();
 
             log_tx
-                .send(LoggerMessage::GetState {
+                .send(TrackerMessage::GetState {
                     run_id,
                     response: tx,
                 })
@@ -554,7 +554,7 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        // Close off everything except the logger
+        // Close off everything except the tracker
         exe_tx.send(ExecutorMessage::Stop {}).unwrap();
         run_tx.send(RunnerMessage::Stop {}).unwrap();
 
@@ -596,7 +596,7 @@ mod tests {
         for (tid, task) in tasks.iter().enumerate() {
             let (tx, rx) = oneshot::channel();
             log_tx
-                .send(LoggerMessage::GetTask {
+                .send(TrackerMessage::GetTask {
                     run_id: run_id,
                     task_id: tid,
                     response: tx,
@@ -612,8 +612,8 @@ mod tests {
             );
         }
 
-        // Close off logger
-        log_tx.send(LoggerMessage::Stop {}).unwrap();
+        // Close off tracker
+        log_tx.send(TrackerMessage::Stop {}).unwrap();
     }
 
     #[tokio::test]
@@ -652,7 +652,7 @@ mod tests {
         for (tid, task) in tasks.iter().enumerate() {
             let (tx, rx) = oneshot::channel();
             log_tx
-                .send(LoggerMessage::GetTask {
+                .send(TrackerMessage::GetTask {
                     run_id: run_id,
                     task_id: tid,
                     response: tx,
@@ -681,7 +681,7 @@ mod tests {
             }
         }
 
-        log_tx.send(LoggerMessage::Stop {}).unwrap();
+        log_tx.send(TrackerMessage::Stop {}).unwrap();
     }
 
     #[tokio::test]
@@ -732,7 +732,7 @@ mod tests {
         for (tid, task) in tasks.iter().enumerate() {
             let (tx, rx) = oneshot::channel();
             log_tx
-                .send(LoggerMessage::GetTask {
+                .send(TrackerMessage::GetTask {
                     run_id: run_id,
                     task_id: tid,
                     response: tx,
@@ -750,6 +750,6 @@ mod tests {
         }
 
         // Close off everything
-        log_tx.send(LoggerMessage::Stop {}).unwrap();
+        log_tx.send(TrackerMessage::Stop {}).unwrap();
     }
 }

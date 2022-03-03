@@ -15,11 +15,11 @@ pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<Executor
                 run_id,
                 task_id,
                 response,
-                logger,
+                tracker,
                 ..
             } => {
-                logger
-                    .send(LoggerMessage::UpdateTaskState {
+                tracker
+                    .send(TrackerMessage::UpdateTaskState {
                         run_id: run_id,
                         task_id: task_id,
                         state: State::Running,

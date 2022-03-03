@@ -190,15 +190,15 @@ async fn start_local_executor(
                 task_id,
                 task,
                 response,
-                logger,
+                tracker,
             } => {
                 let (tx, rx) = oneshot::channel();
                 task_channels.insert((run_id, task_id), tx);
                 if running.len() == max_parallel {
                     running.next().await;
                 }
-                logger
-                    .send(LoggerMessage::UpdateTaskState {
+                tracker
+                    .send(TrackerMessage::UpdateTaskState {
                         run_id,
                         task_id,
                         state: State::Running,
@@ -241,7 +241,7 @@ pub fn start(max_parallel: usize, msgs: mpsc::UnboundedReceiver<ExecutorMessage>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_trackers::noop_logger;
+    use crate::trackers::noop_tracker;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn test_basic_execution() {
@@ -257,7 +257,7 @@ mod tests {
         .unwrap();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        noop_logger::start(log_rx);
+        noop_tracker::start(log_rx);
 
         let (tx, rx) = mpsc::unbounded_channel();
         super::start(10, rx);
@@ -269,7 +269,7 @@ mod tests {
             task_id: 0,
             task: task,
             response: run_tx,
-            logger: log_tx,
+            tracker: log_tx,
         })
         .expect("Unable to spawn task");
 
@@ -308,7 +308,7 @@ mod tests {
         .unwrap();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        noop_logger::start(log_rx);
+        noop_tracker::start(log_rx);
 
         let (tx, rx) = mpsc::unbounded_channel();
         super::start(10, rx);
@@ -320,7 +320,7 @@ mod tests {
             task_id: 0,
             task: task,
             response: run_tx,
-            logger: log_tx,
+            tracker: log_tx,
         })
         .expect("Unable to spawn task");
 
@@ -370,7 +370,7 @@ mod tests {
         let max_parallel = 5;
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        noop_logger::start(log_rx);
+        noop_tracker::start(log_rx);
 
         let (tx, rx) = mpsc::unbounded_channel();
         super::start(max_parallel, rx);
@@ -384,7 +384,7 @@ mod tests {
                 task_id: i,
                 task: task.clone(),
                 response: run_tx,
-                logger: log_tx.clone(),
+                tracker: log_tx.clone(),
             })
             .expect("Unable to spawn task");
             chans.push(run_rx);
@@ -437,7 +437,7 @@ mod tests {
         .unwrap();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        noop_logger::start(log_rx);
+        noop_tracker::start(log_rx);
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
         local_executor::start(10, exe_rx);
@@ -450,7 +450,7 @@ mod tests {
                 task_id: 0,
                 task: task.clone(),
                 response: run_tx,
-                logger: log_tx,
+                tracker: log_tx,
             })
             .expect("Unable to spawn task");
 
