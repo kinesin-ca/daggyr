@@ -236,20 +236,14 @@ struct AppState {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let (log_tx, log_rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        start_memory_logger(log_rx).await;
-    });
+    memory_logger::start(log_rx);
 
     let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        start_local_executor(10, exe_rx).await;
-    });
+    local_executor::start(10, exe_rx);
 
     let (run_tx, run_rx) = mpsc::unbounded_channel();
     let rtx = run_tx.clone();
-    tokio::spawn(async move {
-        start_dag_runner(rtx, run_rx).await;
-    });
+    runner::start(rtx, run_rx);
 
     let l_tx = log_tx.clone();
     let e_tx = exe_tx.clone();

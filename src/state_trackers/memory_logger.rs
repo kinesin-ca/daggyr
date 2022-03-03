@@ -13,6 +13,12 @@ fn range_checker(runs: &Vec<RunRecord>, run_id: RunID, task_id: Option<TaskID>) 
     }
 }
 
+pub fn start(msgs: mpsc::UnboundedReceiver<LoggerMessage>) {
+    tokio::spawn(async move {
+        start_memory_logger(msgs).await;
+    });
+}
+
 pub async fn start_memory_logger(mut msgs: mpsc::UnboundedReceiver<LoggerMessage>) {
     let mut runs: Vec<RunRecord> = vec![];
 

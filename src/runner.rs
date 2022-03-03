@@ -406,7 +406,16 @@ impl Run {
     }
 }
 
-pub async fn start_dag_runner(
+pub fn start(
+    msg_tx: mpsc::UnboundedSender<RunnerMessage>,
+    msg_rx: mpsc::UnboundedReceiver<RunnerMessage>,
+) {
+    tokio::spawn(async move {
+        start_dag_runner(msg_tx, msg_rx).await;
+    });
+}
+
+async fn start_dag_runner(
     msg_tx: mpsc::UnboundedSender<RunnerMessage>,
     mut msg_rx: mpsc::UnboundedReceiver<RunnerMessage>,
 ) {
@@ -495,28 +504,22 @@ pub async fn start_dag_runner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executors::local_executor::start_local_executor;
-    use crate::state_trackers::memory_logger::start_memory_logger;
+    use crate::executors::local_executor;
+    use crate::state_trackers::memory_logger;
 
     async fn run(
         tasks: &Vec<Task>,
         parameters: &Parameters,
     ) -> (RunID, mpsc::UnboundedSender<LoggerMessage>) {
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_memory_logger(log_rx).await;
-        });
+        memory_logger::start(log_rx);
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_local_executor(10, exe_rx).await;
-        });
+        local_executor::start(10, exe_rx);
 
         let (run_tx, run_rx) = mpsc::unbounded_channel();
         let rtx = run_tx.clone();
-        tokio::spawn(async move {
-            start_dag_runner(rtx, run_rx).await;
-        });
+        super::start(rtx, run_rx);
 
         let (tx, rx) = oneshot::channel();
         run_tx

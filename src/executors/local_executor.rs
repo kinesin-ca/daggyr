@@ -158,7 +158,7 @@ async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt
 }
 
 /// The mpsc channel can be sized to fit max parallelism
-pub async fn start_local_executor(
+async fn start_local_executor(
     max_parallel: usize,
     mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>,
 ) {
@@ -232,10 +232,16 @@ pub async fn start_local_executor(
     }
 }
 
+pub fn start(max_parallel: usize, msgs: mpsc::UnboundedReceiver<ExecutorMessage>) {
+    tokio::spawn(async move {
+        start_local_executor(max_parallel, msgs).await;
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_trackers::noop_logger::*;
+    use crate::state_trackers::noop_logger;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn test_basic_execution() {
@@ -251,14 +257,10 @@ mod tests {
         .unwrap();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_noop_logger(log_rx).await;
-        });
+        noop_logger::start(log_rx);
 
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_local_executor(10, rx).await;
-        });
+        super::start(10, rx);
 
         // Submit the task
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
@@ -306,14 +308,10 @@ mod tests {
         .unwrap();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_noop_logger(log_rx).await;
-        });
+        noop_logger::start(log_rx);
 
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_local_executor(3, rx).await;
-        });
+        super::start(10, rx);
 
         // Submit the task
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
@@ -372,14 +370,10 @@ mod tests {
         let max_parallel = 5;
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_noop_logger(log_rx).await;
-        });
+        noop_logger::start(log_rx);
 
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_local_executor(max_parallel, rx).await;
-        });
+        super::start(max_parallel, rx);
 
         let mut chans = Vec::new();
         for i in 0..10 {
@@ -443,25 +437,22 @@ mod tests {
         .unwrap();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_noop_logger(log_rx).await;
-        });
+        noop_logger::start(log_rx);
 
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_local_executor(10, rx).await;
-        });
+        let (exe_tx, exe_rx) = mpsc::unbounded_channel();
+        local_executor::start(10, exe_rx);
 
         // Submit the task
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
-        tx.send(ExecutorMessage::ExecuteTask {
-            run_id: 0,
-            task_id: 0,
-            task: task.clone(),
-            response: run_tx,
-            logger: log_tx,
-        })
-        .expect("Unable to spawn task");
+        exe_tx
+            .send(ExecutorMessage::ExecuteTask {
+                run_id: 0,
+                task_id: 0,
+                task: task.clone(),
+                response: run_tx,
+                logger: log_tx,
+            })
+            .expect("Unable to spawn task");
 
         let report = run_rx.recv().await.expect("Unable to recv");
         match report {

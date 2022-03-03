@@ -1,6 +1,12 @@
 use crate::messages::*;
 use tokio::sync::mpsc;
 
+pub fn start(msgs: mpsc::UnboundedReceiver<LoggerMessage>) {
+    tokio::spawn(async move {
+        start_noop_logger(msgs).await;
+    });
+}
+
 pub async fn start_noop_logger(mut msgs: mpsc::UnboundedReceiver<LoggerMessage>) {
     while let Some(msg) = msgs.recv().await {
         use LoggerMessage::*;
