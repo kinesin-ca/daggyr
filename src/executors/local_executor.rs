@@ -430,7 +430,7 @@ mod tests {
             {
                 "class": "simple_task",
                 "details": {
-                    "command": [ "/usr/bin/dd", "if=/dev/random", "count=10", "bs=1024k" ]
+                    "command": [ "/bin/dd", "if=/dev/urandom", "count=10", "bs=1024k" ]
                 }
             }"#,
         )
