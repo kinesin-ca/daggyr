@@ -1,5 +1,5 @@
 [package]
-name = "daggyr_async"
+name = "daggyr"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,6 +11,9 @@ tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 futures = { version = "0.3", features = [ "std" ] }
+reqwest = { version = "0.11", features = ["json"] }
+sysinfo = { version = "0.23", optional = true }
+users = { version = "0.11", optional = true }
 serde_json = "1"
 rmp-serde = "1"
 log = "0.4"
@@ -18,9 +21,7 @@ fern = "0.6"
 actix-web = "4"
 actix-cors = "0.6"
 env_logger = "0.9"
-reqwest = { version = "0.11", features = ["json"] }
-sysinfo = { version = "0.23", optional = true }
-users = { version = "0.11", optional = true }
+dotenv = "0.15"
 
 [features]
 slurm = ["sysinfo", "users"]

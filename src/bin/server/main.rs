@@ -1,10 +1,14 @@
+extern crate dotenv;
+
 use actix_cors::Cors;
 use actix_web::{error, middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use chrono::prelude::*;
+use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::env;
 
-use daggyr_async::prelude::*;
+use daggyr::prelude::*;
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Serialize)]
@@ -233,17 +237,46 @@ struct AppState {
     run_tx: mpsc::UnboundedSender<RunnerMessage>,
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
+fn init() -> (
+    mpsc::UnboundedSender<LoggerMessage>,
+    mpsc::UnboundedSender<ExecutorMessage>,
+    mpsc::UnboundedSender<RunnerMessage>,
+) {
+    dotenv().ok();
+
     let (log_tx, log_rx) = mpsc::unbounded_channel();
-    memory_logger::start(log_rx);
-
     let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-    local_executor::start(10, exe_rx);
-
     let (run_tx, run_rx) = mpsc::unbounded_channel();
+
+    // Tracker
+    let tracker = env::var("DAGGYR_TRACKER").unwrap_or("memory".to_owned());
+    match tracker.as_ref() {
+        "memory" => memory_logger::start(log_rx),
+        _ => panic!("Unknown tracker: {}", tracker),
+    };
+
+    // Executor
+    let executor = env::var("DAGGYR_EXECUTOR").unwrap_or("local".to_owned());
+    match executor.as_ref() {
+        "local" => {
+            let workers = env::var("DAGGYR_LOCAL_EXECUTOR_WORKERS")
+                .unwrap_or("10".to_owned())
+                .parse::<usize>()
+                .expect("DAGGYR_LOCAL_EXECUTOR_WORKERS must be an unsigned number");
+            local_executor::start(workers, exe_rx);
+        }
+        _ => panic!("Unknown executor: {}", tracker),
+    };
+
     let rtx = run_tx.clone();
     runner::start(rtx, run_rx);
+
+    (log_tx, exe_tx, run_tx)
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let (log_tx, exe_tx, run_tx) = init();
 
     let l_tx = log_tx.clone();
     let e_tx = exe_tx.clone();

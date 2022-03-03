@@ -32,3 +32,23 @@ fork), to distributed work managers like [slurm](https://slurm.schedmd.com/overv
 State is maintained via state loggers. Currently daggy supports an in-memory state manager.
 
 Future plans include supporting [postgres](https://postgresql.org).
+
+Running the Server
+===
+
+```bash
+
+# The default executor
+DAGGYR_EXECUTOR="local"
+
+# Local executor options
+DAGGYR_LOCAL_EXECUTOR_WORKERS=10
+
+# Slurm executor options
+DAGGYR_SLURM_EXECUTOR_BASE_URL="https://...."
+
+#
+# Trackers
+#
+DAGGYR_TRACKER="memory" # one of postgres, mysql,
+```
