@@ -271,12 +271,18 @@ fn init() -> (
     let rtx = run_tx.clone();
     runner::start(rtx, run_rx);
 
-    (log_tx, exe_tx, run_tx)
+    let listen_spec = format!(
+        "{}:{}",
+        env::var("DAGGYR_IP").unwrap_or("127.0.0.1".to_owned()),
+        env::var("DAGGYR_PORT").unwrap_or("2503".to_owned())
+    );
+
+    (log_tx, exe_tx, run_tx, listen_spec)
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let (log_tx, exe_tx, run_tx) = init();
+    let (log_tx, exe_tx, run_tx, listen_spec) = init();
 
     let l_tx = log_tx.clone();
     let e_tx = exe_tx.clone();
@@ -351,7 +357,7 @@ async fn main() -> std::io::Result<()> {
                     ),
             )
     })
-    .bind("127.0.0.1:8080")?
+    .bind(listen_spec)?
     .run()
     .await;
 
