@@ -1,16 +1,19 @@
 DaggyR
+==
 
 Description
 ==
 
-DaggyR is a work orchestration framework for running workflows modeled as directed, acyclic graphs (DAGs). These are
-quite useful when modeling data ingestion / processing pipelines.
+DaggyR is a work orchestration framework for running workflows modeled as
+directed, acyclic graphs (DAGs). These are quite useful for all kinds of
+work flows, especially Fetch, Extract, Transform, Load (FETL) workloads.
 
-Below is an example workflow where data are pulled from three sources (A, B, C), some work is done on them, and a report
-is generated.
+Below is an example workflow where data are pulled from three sources
+(A, B, C), some work is done on them, and a report is generated.
 
-Each step depends on the success of its upstream dependencies, e.g. `Derive_Data_AB` can't run until `Transform_A` and
-`Transform_B` have completed successfully.
+Each step depends on the success of its upstream dependencies, e.g.
+`Derive_Data_AB` can't run until `Transform_A` and `Transform_B` have
+completed successfully.
 
 ```mermaid
 graph LR
@@ -26,12 +29,17 @@ graph LR
   Derive_Data_ABC-->Report;
 ```
 
-Individual tasks (vertices) are run via a task executor. Daggy supports multiple executors, from local executor (via
-fork), to distributed work managers like [slurm](https://slurm.schedmd.com/overview.html).
+Individual tasks (vertices) are queued as soon as their upstream tasks have
+completed successfully, and run via a task executor back end as soon as
+that back end has capacity.
 
-State is maintained via state loggers. Currently daggy supports an in-memory state manager.
+Daggy supports multiple executor back ends, from local executor (via fork),
+to distributed work managers like [slurm](https://slurm.schedmd.com/overview.html)
+, SSH (planned), Remote agent (planned), or [kubernetes](https://kubernetes.io/) (planned).
 
-Future plans include supporting [postgres](https://postgresql.org).
+Run state is maintained via state trackers. Currently daggy supports an
+in-memory state manager. Future plans include supporting SQL
+[postgres](https://postgresql.org).
 
 Running the Server
 ===
