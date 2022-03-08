@@ -1,0 +1,22 @@
+[server]
+ip = "127.0.0.1"
+port = "2503"
+default_pool = "local"
+
+[pool.local]
+executor = "local"
+workers = 5
+
+[pool.slurm]
+executor = "slurm"
+base_url = "http://localhost:6820/slurm/v0.0.36"
+
+[pool.ssh]
+executor = "ssh"
+host.hosta = { user = "bob", cores = 20, memory_mb = 2048 }
+host.hostb = { user = "bob", cores = 72, memory_mb = 2048, port = 2200 }
+
+[pool.remote]
+executor = "remote"
+host.hosta = { user = "bob", cores = 20, memory_mb = 2048, port = 2504 }
+host.hostb = { user = "bob", cores = 72, memory_mb = 2048, port = 2504 }
