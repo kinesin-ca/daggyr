@@ -2,8 +2,9 @@
 name = "daggyr"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "MIT"
+repository = "https://github.com/kinesintech/daggyr"
+description = "A flexible DAG task orchestration engine"
 
 [dependencies]
 anyhow = "1.0"
