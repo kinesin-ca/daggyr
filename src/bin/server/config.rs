@@ -2,6 +2,7 @@ use daggyr::prelude::*;
 pub use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use sysinfo::{RefreshKind, System, SystemExt};
 use tokio::sync::mpsc;
 
 #[derive(Clone, Deserialize, Debug)]
@@ -19,10 +20,21 @@ impl Default for ServerConfig {
     }
 }
 
+fn default_workers() -> usize {
+    let system = System::new_with_specifics(RefreshKind::new().with_cpu());
+    let workers = system.processors().len() - 2;
+    if workers <= 0 {
+        1
+    } else {
+        workers
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "executor", rename_all = "lowercase")]
 pub enum PoolConfig {
     Local {
+        #[serde(default = "default_workers")]
         workers: usize,
     },
 
@@ -35,13 +47,16 @@ pub enum PoolConfig {
     },
 
     #[cfg(feature = "slurm")]
-    Slurm {
-        base_url: String,
-    },
+    Slurm { base_url: String },
 }
 
 fn default_pools() -> HashMap<String, PoolConfig> {
-    HashMap::from([("default".to_owned(), PoolConfig::Local { workers: 10 })])
+    HashMap::from([(
+        "default".to_owned(),
+        PoolConfig::Local {
+            workers: default_workers(),
+        },
+    )])
 }
 
 #[derive(Deserialize, Debug, Clone)]

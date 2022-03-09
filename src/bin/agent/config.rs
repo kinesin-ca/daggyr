@@ -1,12 +1,36 @@
 use daggyr::prelude::*;
 pub use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use sysinfo::{RefreshKind, System, SystemExt};
 use tokio::sync::mpsc;
+
+fn default_workers() -> usize {
+    let system = System::new_with_specifics(RefreshKind::new().with_cpu());
+    let workers = system.processors().len() - 2;
+    if workers <= 0 {
+        1
+    } else {
+        workers
+    }
+}
+
+fn default_ip() -> String {
+    "127.0.0.1".to_owned()
+}
+
+fn default_port() -> u32 {
+    2504
+}
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct GlobalConfigSpec {
+    #[serde(default = "default_ip")]
     pub ip: String,
+
+    #[serde(default = "default_port")]
     pub port: u32,
+
+    #[serde(default = "default_workers")]
     pub workers: usize,
 }
 
@@ -15,7 +39,7 @@ impl Default for GlobalConfigSpec {
         GlobalConfigSpec {
             ip: String::from("127.0.0.1"),
             port: 2503,
-            workers: 10,
+            workers: default_workers(),
         }
     }
 }
