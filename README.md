@@ -55,6 +55,8 @@ Running the Server
 ==================
 
 ```bash
+# By default will use a memory tracker and local executor with
+# min(1, # of cores -2) workers / task parallelism
 cargo run --bin server
 ```
 
