@@ -13,10 +13,10 @@ base_url = "http://localhost:6820/slurm/v0.0.36"
 
 [pool.ssh]
 executor = "ssh"
-host.hosta = { user = "bob", cores = 20, memory_mb = 2048 }
-host.hostb = { user = "bob", cores = 72, memory_mb = 2048, port = 2200 }
+host.hosta = { user = "bob", resources = {cores = 20, memory_mb = 2048 } }
+host.hostb = { user = "bob", resources = { cores = 72, memory_mb = 2048 }, port = 2200 }
 
 [pool.remote]
 executor = "remote"
-host.hosta = { user = "bob", cores = 20, memory_mb = 2048, port = 2504 }
-host.hostb = { user = "bob", cores = 72, memory_mb = 2048, port = 2504 }
+host.hosta = { user = "bob", resources = { cores = 20, memory_mb = 2048 }, port = 2504 }
+host.hostb = { user = "bob", resources = { cores = 72, memory_mb = 2048 }, port = 2504 }
