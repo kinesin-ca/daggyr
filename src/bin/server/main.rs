@@ -3,9 +3,11 @@ mod config;
 use actix_cors::Cors;
 use actix_web::{error, middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use chrono::prelude::*;
+use clap::Parser;
 use config::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use daggyr::prelude::*;
 use tokio::sync::oneshot;
@@ -55,11 +57,13 @@ struct RunsSelection {
 
 async fn get_runs(
     criteria: web::Query<RunsSelection>,
-    data: web::Data<GlobalConfig>,
+    state: web::Data<AppState>,
 ) -> impl Responder {
     let (response, rx) = oneshot::channel();
 
-    data.tracker
+    state
+        .config
+        .tracker
         .send(TrackerMessage::GetRuns {
             tags: criteria.tags.clone(),
             states: criteria.states.clone(),
@@ -72,28 +76,43 @@ async fn get_runs(
     HttpResponse::Ok().json(rx.await.unwrap_or(Vec::new()))
 }
 
-async fn submit_run(spec: web::Json<RunSpec>, data: web::Data<GlobalConfig>) -> impl Responder {
-    let (tx, rx) = oneshot::channel();
-
-    let pool = match spec.pool {
+async fn submit_run(spec: web::Json<RunSpec>, state: web::Data<AppState>) -> impl Responder {
+    let pool = match &spec.pool {
         Some(name) => name.clone(),
-        None => data.default_pool.clone(),
+        None => state.config.default_pool.clone(),
     };
 
-    if !data.pools.contains_key(&pool) {
+    if !state.config.pools.contains_key(&pool) {
         return HttpResponse::BadRequest().json(SimpleError {
             error: format!("Pool {} is not defined", pool),
         });
     }
 
-    data.runner
+    // Validate the tasks
+    let (response, rx) = oneshot::channel();
+    state.config.pools[&pool]
+        .send(ExecutorMessage::ValidateTasks {
+            tasks: spec.tasks.clone(),
+            response,
+        })
+        .expect("Unable to contact executor");
+    if let Err(e) = rx.await.unwrap() {
+        return HttpResponse::BadRequest().json(SimpleError {
+            error: format!("Invalid tasks for pool {}: {:?}", pool, e),
+        });
+    }
+
+    let (tx, rx) = oneshot::channel();
+    state
+        .config
+        .runner
         .send(RunnerMessage::Start {
             tags: spec.tags.clone(),
             tasks: spec.tasks.clone(),
             response: tx,
             parameters: spec.parameters.clone(),
-            tracker: data.tracker.clone(),
-            executor: data.pools.get(&pool).unwrap().clone(),
+            tracker: state.config.tracker.clone(),
+            executor: state.config.pools.get(&pool).unwrap().clone(),
         })
         .unwrap();
 
@@ -105,11 +124,13 @@ async fn submit_run(spec: web::Json<RunSpec>, data: web::Data<GlobalConfig>) -> 
     }
 }
 
-async fn get_run(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
+async fn get_run(path: web::Path<RunID>, state: web::Data<AppState>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.tracker
+    state
+        .config
+        .tracker
         .send(TrackerMessage::GetRun { run_id, response })
         .unwrap();
 
@@ -121,11 +142,13 @@ async fn get_run(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl 
     }
 }
 
-async fn get_task_summary(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
+async fn get_task_summary(path: web::Path<RunID>, state: web::Data<AppState>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.tracker
+    state
+        .config
+        .tracker
         .send(TrackerMessage::GetTaskSummary { run_id, response })
         .unwrap();
 
@@ -137,11 +160,13 @@ async fn get_task_summary(path: web::Path<RunID>, data: web::Data<GlobalConfig>)
     }
 }
 
-async fn get_run_state(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
+async fn get_run_state(path: web::Path<RunID>, state: web::Data<AppState>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.tracker
+    state
+        .config
+        .tracker
         .send(TrackerMessage::GetState { run_id, response })
         .unwrap();
 
@@ -153,11 +178,13 @@ async fn get_run_state(path: web::Path<RunID>, data: web::Data<GlobalConfig>) ->
     }
 }
 
-async fn get_run_tasks(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
+async fn get_run_tasks(path: web::Path<RunID>, state: web::Data<AppState>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.tracker
+    state
+        .config
+        .tracker
         .send(TrackerMessage::GetTaskSummary { run_id, response })
         .unwrap();
 
@@ -171,12 +198,14 @@ async fn get_run_tasks(path: web::Path<RunID>, data: web::Data<GlobalConfig>) ->
 
 async fn get_run_task(
     path: web::Path<(RunID, TaskID)>,
-    data: web::Data<GlobalConfig>,
+    state: web::Data<AppState>,
 ) -> impl Responder {
     let (run_id, task_id) = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.tracker
+    state
+        .config
+        .tracker
         .send(TrackerMessage::GetTask {
             run_id,
             task_id,
@@ -194,9 +223,11 @@ async fn get_run_task(
 
 async fn submit_task_attempt(
     payload: web::Json<AttemptReport>,
-    data: web::Data<GlobalConfig>,
+    state: web::Data<AppState>,
 ) -> impl Responder {
-    data.runner
+    state
+        .config
+        .runner
         .send(RunnerMessage::ExecutionReport {
             run_id: payload.run_id,
             task_id: payload.task_id,
@@ -207,11 +238,13 @@ async fn submit_task_attempt(
     HttpResponse::Ok()
 }
 
-async fn stop_run(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
+async fn stop_run(path: web::Path<RunID>, state: web::Data<AppState>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.runner
+    state
+        .config
+        .runner
         .send(RunnerMessage::StopRun { run_id, response })
         .unwrap();
 
@@ -219,15 +252,25 @@ async fn stop_run(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl
     HttpResponse::Ok()
 }
 
-async fn retry_run(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
+async fn retry_run(path: web::Path<RunID>, state: web::Data<AppState>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.runner
+    let pool = {
+        let pools = state.run_pools.lock().unwrap();
+        pools
+            .get(&run_id)
+            .unwrap_or(&state.config.default_pool)
+            .clone()
+    };
+
+    state
+        .config
+        .runner
         .send(RunnerMessage::Retry {
             run_id,
-            tracker: data.tracker.clone(),
-            executor: data.exe_tx.clone(),
+            tracker: state.config.tracker.clone(),
+            executor: state.config.pools.get(&pool).unwrap().clone(),
             response,
         })
         .unwrap();
@@ -256,9 +299,38 @@ fn init(config_file: &str) -> GlobalConfig {
     GlobalConfig::new(&spec)
 }
 
+#[derive(Parser, Debug)]
+#[clap(author, version, about)]
+struct Args {
+    /// Configuration File
+    #[clap(short, long, default_value = "")]
+    config: String,
+
+    /// Enable verbose logging
+    #[clap(short, long)]
+    verbose: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AppState {
+    config: GlobalConfig,
+    run_pools: Arc<Mutex<HashMap<RunID, String>>>,
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let config = init("");
+    let args = Args::parse();
+
+    let config = init(args.config.as_ref());
+
+    if args.verbose {
+        println!("{:?}", config);
+    }
+
+    let data = web::Data::new(AppState {
+        config: config.clone(),
+        run_pools: Arc::new(Mutex::new(HashMap::new())),
+    });
 
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let res = HttpServer::new(move || {
@@ -302,7 +374,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(cors)
-            .app_data(web::Data::new(config))
+            .app_data(data.clone())
             .wrap(Logger::new(
                 r#"%a "%r" %s %b "%{Referer}i" "%{User-Agent}i" %T"#,
             ))

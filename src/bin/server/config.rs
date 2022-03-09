@@ -1,6 +1,7 @@
 use daggyr::prelude::*;
 pub use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use tokio::sync::mpsc;
 
 #[derive(Clone, Deserialize, Debug)]
@@ -18,8 +19,8 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(tag = "executor")]
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "executor", rename_all = "lowercase")]
 pub enum PoolConfig {
     Local {
         workers: usize,
@@ -38,7 +39,7 @@ fn default_pools() -> HashMap<String, PoolConfig> {
     HashMap::from([("default".to_owned(), PoolConfig::Local { workers: 10 })])
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "tracker")]
 pub enum TrackerConfig {
     Memory,
@@ -50,7 +51,7 @@ impl Default for TrackerConfig {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct GlobalConfigSpec {
     #[serde(default)]
     pub server: ServerConfig,
@@ -65,18 +66,19 @@ pub struct GlobalConfigSpec {
     pub default_pool: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct GlobalConfig {
     pub server: ServerConfig,
     pub pools: HashMap<String, mpsc::UnboundedSender<ExecutorMessage>>,
     pub tracker: mpsc::UnboundedSender<TrackerMessage>,
     pub runner: mpsc::UnboundedSender<RunnerMessage>,
     pub default_pool: String,
+    pub spec: GlobalConfigSpec,
 }
 
 impl GlobalConfig {
     pub fn new(spec: &GlobalConfigSpec) -> Self {
-        let pools = HashMap::new();
+        let mut pools = HashMap::new();
 
         use PoolConfig::*;
         for (pool, pool_spec) in spec.pools.iter() {
@@ -86,7 +88,7 @@ impl GlobalConfig {
                     local_executor::start(*workers, rx);
                 }
                 SSH { targets } => {
-                    ssh_executor::start(*targets.clone(), rx);
+                    ssh_executor::start(targets.clone(), rx);
                 }
 
                 #[cfg(feature = "slurm")]
@@ -94,7 +96,7 @@ impl GlobalConfig {
                     slurm_executor::start(base_url);
                 }
             }
-            pools.insert(*pool, tx);
+            pools.insert(pool.clone(), tx);
         }
 
         // Tracker
@@ -112,19 +114,29 @@ impl GlobalConfig {
         let default_pool = if spec.default_pool.is_empty() {
             pools.keys().next().unwrap().clone()
         } else {
-            spec.default_pool
+            spec.default_pool.clone()
         };
 
         GlobalConfig {
-            server: spec.server,
+            server: spec.server.clone(),
             pools,
             tracker,
             runner,
             default_pool,
+            spec: spec.clone(),
         }
     }
 
     pub fn listen_spec(&self) -> String {
         format!("{}:{}", self.server.ip, self.server.port)
+    }
+}
+
+impl Debug for GlobalConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GlobalConfig")
+            .field("spec", &self.spec)
+            .field("default_pool", &self.default_pool)
+            .finish()
     }
 }

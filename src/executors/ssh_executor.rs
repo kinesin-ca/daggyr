@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use futures::StreamExt;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SSHTarget {
     pub host: String,
 
