@@ -1,12 +1,59 @@
+use super::Result;
 pub use chrono::{DateTime, Utc};
 pub use serde::{Deserialize, Serialize};
 pub use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::ops::{Deref, DerefMut};
 
 pub type RunID = usize;
 pub type TaskID = usize;
 pub type Tags = HashSet<String>;
 pub type Parameters = HashMap<String, Vec<String>>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskResources(HashMap<String, i64>);
+
+impl Deref for TaskResources {
+    type Target = HashMap<String, i64>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TaskResources {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl TaskResources {
+    pub fn can_satisfy(&self, requirements: &TaskResources) -> bool {
+        requirements
+            .iter()
+            .all(|(k, v)| self.contains_key(k) && self[k] >= *v)
+    }
+
+    pub fn sub(&mut self, resources: &TaskResources) -> Result<()> {
+        if self.can_satisfy(resources) {
+            for (k, v) in resources.iter() {
+                *self.get_mut(k).unwrap() -= v;
+            }
+            Ok(())
+        } else {
+            Err(anyhow!("Cannot satisfy requested resources"))
+        }
+    }
+
+    pub fn add(&mut self, resources: &TaskResources) {
+        for (k, v) in resources.iter() {
+            if self.contains_key(k) {
+                *self.get_mut(k).unwrap() += *v;
+            } else {
+                self.insert(k.clone(), *v);
+            }
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize, Copy, Debug, PartialEq, Hash, Eq)]
 pub enum State {

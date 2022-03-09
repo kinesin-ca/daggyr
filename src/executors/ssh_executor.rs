@@ -8,49 +8,26 @@ use crate::structs::*;
 use futures::stream::futures_unordered::FuturesUnordered;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use futures::StreamExt;
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ResourceCapacity {
-    cores: u64,
-    memory_mb: u64,
-}
-
-impl ResourceCapacity {
-    fn can_satisfy(&self, resources: &ResourceCapacity) -> bool {
-        resources.cores <= self.cores && resources.memory_mb <= self.memory_mb
-    }
-
-    fn sub(&mut self, resources: &ResourceCapacity) -> bool {
-        self.cores -= resources.cores;
-        self.memory_mb -= resources.memory_mb;
-    }
-
-    fn add(&mut self, resources: &ResourceCapacity) -> bool {
-        self.cores += resources.cores;
-        self.memory_mb += resources.memory_mb;
-    }
-}
 
 pub struct SSHTarget {
     host: String,
     port: Option<u16>,
     private_key_file: Option<String>,
     user: Option<String>,
-    resources: ResourceCapacity,
+    resources: TaskResources,
 }
 
 impl SSHTarget {
-    fn new(host: String, resources: ResourceCapacity) -> Self {
+    fn new(host: String, resources: TaskResources) -> Self {
         SSHTarget {
             host,
             port: None,
             private_key_file: None,
             user: None,
-            resources: resources,
+            resources,
         }
     }
 }
@@ -71,7 +48,7 @@ struct SSHTaskDetail {
     timeout: i64,
 
     /// Cores required by the task
-    resources: ResourceCapacity,
+    resources: TaskResources,
 }
 
 fn get_task_details(task: &Task) -> Result<SSHTaskDetail, serde_json::Error> {
@@ -105,10 +82,10 @@ fn sshify_task(mut task: Task, target: &SSHTarget) -> Result<Task> {
     let details = get_task_details(&task)?;
 
     // Handle the user and host
-    if let Some(user) = target.user {
+    if let Some(user) = &target.user {
         new_command.push(format!("{}@{}", user, target.host));
     } else {
-        new_command.push(target.host);
+        new_command.push(target.host.clone());
     }
 
     // Port
@@ -118,9 +95,9 @@ fn sshify_task(mut task: Task, target: &SSHTarget) -> Result<Task> {
     }
 
     // private key
-    if let Some(key) = target.private_key_file {
+    if let Some(key) = &target.private_key_file {
         new_command.push("-i".to_owned());
-        new_command.push(key);
+        new_command.push(key.clone());
     }
 
     // Add the environment
@@ -140,8 +117,8 @@ fn sshify_task(mut task: Task, target: &SSHTarget) -> Result<Task> {
 }
 
 async fn validate_tasks(
-    tasks: Vec<Task>,
-    max_capacities: Vec<ResourceCapacity>,
+    tasks: &Vec<Task>,
+    max_capacities: &Vec<TaskResources>,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::<String>::new();
     for (i, task) in tasks.iter().enumerate() {
@@ -169,32 +146,39 @@ async fn validate_tasks(
 }
 
 struct RunningTask {
-    resources: ResourceCapacity,
+    resources: TaskResources,
     target_id: usize,
 }
 
 /// The mpsc channel can be sized to fit max parallelism
 async fn start_ssh_executor(
-    mut targets: Vec<SSHTarget>,
+    targets: Vec<SSHTarget>,
     mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>,
 ) {
-    // Start up a local executor capable of sending
-    let max_caps: Vec<ResourceCapacity> = targets.iter().map(|x| x.resources.clone()).collect();
-    let total_cores = targets.iter().map(|x| x.total_resources.cores).sum();
-    let cur_caps = Arc::new(Mutex::new(max_caps));
+    if !targets.iter().all(|x| x.resources.contains_key("cores")) {
+        panic!("Not all SSH targets have the required resource 'cores' defined");
+    }
 
-    // Set up the
+    // Start up a local executor capable of sending
+    let max_caps: Vec<TaskResources> = targets.iter().map(|x| x.resources.clone()).collect();
+    let total_cores: i64 = targets.iter().map(|x| x.resources["cores"]).sum();
+    let mut cur_caps = max_caps.clone();
+
+    // Set up the local executor
     let (le_tx, le_rx) = mpsc::unbounded_channel();
-    local_executor::start(max_cores as usize, le_rx);
+    local_executor::start(total_cores as usize, le_rx);
+
+    // Tasks waiting to release resources
+    let mut running = FuturesUnordered::new();
 
     while let Some(msg) = exe_msgs.recv().await {
         use ExecutorMessage::*;
         match msg {
             ValidateTasks { tasks, response } => {
                 let ltx = le_tx.clone();
-                let caps = capacities.clone();
+                let caps = max_caps.clone();
                 tokio::spawn(async move {
-                    let result = validate_tasks(tasks, caps).await;
+                    let result = validate_tasks(&tasks, &caps).await;
                     if result.is_err() {
                         response.send(result).unwrap_or(());
                     } else {
@@ -224,33 +208,52 @@ async fn start_ssh_executor(
                 response,
                 tracker,
             } => {
-                loop {
-                    if let Some(tid, target) = targets
-                        .iter()
-                        .enumerate()
-                        .find(|(i, x)| x.available_resources.can_satisfy(details.resources))
-                    {
-                        target.available_resources.sub(&details.resources);
-
-                        let resources = details.resources.clone();
-
-                        // TODO: Handle errors more gracefully
-                        let ssh_task = sshify_task(task, target).unwrap();
-
-                        let ltx = le_tx.clone();
-                        tokio::spawn(async move {
-                            let (rtx, rrx) = mpsc::unbounded_channel();
-
-                            le.send(ExecuteTask {
+                match validate_tasks(&vec![task.clone()], &max_caps).await {
+                    Err(e) => {
+                        let mut attempt = TaskAttempt::new();
+                        attempt.succeeded = false;
+                        attempt.executor.extend(e);
+                        response
+                            .send(RunnerMessage::ExecutionReport {
                                 run_id,
                                 task_id,
-                                ssh_task,
-                                rtx,
+                                attempt,
+                            })
+                            .expect("Unable to send response");
+                    }
+                    Ok(()) => {
+                        let details = get_task_details(&task).unwrap();
+                        let resources = details.resources.clone();
+
+                        // Wait until a target is available
+                        while !cur_caps.iter().any(|x| x.can_satisfy(&resources)) {
+                            let result: Result<(usize, TaskResources), tokio::task::JoinError> =
+                                running.next().await.unwrap();
+
+                            let (tid, resources) = result.unwrap();
+                            cur_caps[tid].add(&resources);
+                        }
+
+                        let (tid, capacity) = cur_caps
+                            .iter_mut()
+                            .enumerate()
+                            .find(|(_, x)| x.can_satisfy(&details.resources))
+                            .unwrap();
+                        capacity.sub(&resources).unwrap();
+                        let ssh_task = sshify_task(task, &targets[tid]).unwrap();
+                        let ltx = le_tx.clone();
+                        running.push(tokio::spawn(async move {
+                            let (rtx, mut rrx) = mpsc::unbounded_channel();
+                            ltx.send(ExecuteTask {
+                                run_id,
+                                task_id,
+                                task: ssh_task,
+                                response: rtx,
                                 tracker,
                             })
-                            .unwrap_or(());
+                            .expect("Unable to submit task to local executor");
 
-                            let Some(msg) = rrx.recv().await;
+                            let msg = rrx.recv().await.unwrap();
                             match msg {
                                 exe @ RunnerMessage::ExecutionReport { .. } => {
                                     response.send(exe).unwrap_or(());
@@ -259,37 +262,15 @@ async fn start_ssh_executor(
                                     panic!("Unexpected message");
                                 }
                             }
-                        });
 
-                        break;
+                            (tid, resources)
+                        }));
                     }
-                    sleep(Duration::from_millis(100)).await;
                 }
-
-                task_channels.insert((run_id, task_id), tx);
-                if running.len() == max_parallel {
-                    running.next().await;
-                }
-                running.push(tokio::spawn(async move {
-                    let attempt = run_task(task, rx).await;
-                    response
-                        .send(RunnerMessage::ExecutionReport {
-                            run_id,
-                            task_id,
-                            attempt,
-                        })
-                        .unwrap();
-                }));
             }
-            StopTask {
-                run_id,
-                task_id,
-                response,
-            } => {
-                if let Some(tx) = task_channels.remove(&(run_id, task_id)) {
-                    tx.send(()).unwrap_or(());
-                }
-                response.send(()).unwrap_or(());
+
+            msg @ StopTask { .. } => {
+                le_tx.send(msg).unwrap_or(());
             }
             Stop {} => {
                 break;

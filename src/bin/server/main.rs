@@ -241,6 +241,7 @@ fn init() -> (
     mpsc::UnboundedSender<TrackerMessage>,
     mpsc::UnboundedSender<ExecutorMessage>,
     mpsc::UnboundedSender<RunnerMessage>,
+    String,
 ) {
     dotenv().ok();
 

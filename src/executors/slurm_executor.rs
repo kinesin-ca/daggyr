@@ -447,6 +447,12 @@ pub async fn start_slurm_executor(
     }
 }
 
+pub fn start(base_url: String, msgs: mpsc::UnboundedReceiver<ExecutorMessage>) {
+    tokio::spawn(async move {
+        start_slurm_executor(base_url, msgs).await;
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,9 +486,7 @@ mod tests {
         let base_url = "http://localhost:6820/slurm/v0.0.36".to_owned();
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_slurm_executor(base_url, exe_rx).await;
-        });
+        super::start(base_ur, exe_rx);
 
         let task_spec = format!(
             r#"
@@ -536,9 +540,7 @@ mod tests {
         let base_url = "http://localhost:6820/slurm/v0.0.36".to_owned();
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_slurm_executor(base_url, exe_rx).await;
-        });
+        super::start(base_ur, exe_rx);
 
         let task_spec = format!(
             r#"
