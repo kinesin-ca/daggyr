@@ -4,14 +4,16 @@ use std::fmt::Debug;
 use sysinfo::{RefreshKind, System, SystemExt};
 use tokio::sync::mpsc;
 
-fn default_workers() -> usize {
-    let system = System::new_with_specifics(RefreshKind::new().with_cpu());
-    let workers = system.processors().len() - 2;
-    if workers <= 0 {
-        1
-    } else {
-        workers
-    }
+fn default_resources() -> TaskResources {
+    let system = System::new_with_specifics(RefreshKind::new().with_cpu().with_memory());
+    let cores = (system.processors().len() as i64) - 2;
+    let free_memory = (system.total_memory() - system.used_memory()) as f64;
+    let memory_mb = ((free_memory * 0.8) as i64) / 1024;
+
+    let mut resources = TaskResources::new();
+    resources.insert("cores".to_owned(), cores);
+    resources.insert("memory_mb".to_owned(), memory_mb);
+    resources
 }
 
 fn default_ip() -> String {
@@ -30,8 +32,8 @@ pub struct GlobalConfigSpec {
     #[serde(default = "default_port")]
     pub port: u32,
 
-    #[serde(default = "default_workers")]
-    pub workers: usize,
+    #[serde(default = "default_resources")]
+    pub resources: TaskResources,
 }
 
 impl Default for GlobalConfigSpec {
@@ -39,7 +41,7 @@ impl Default for GlobalConfigSpec {
         GlobalConfigSpec {
             ip: String::from("127.0.0.1"),
             port: 2503,
-            workers: default_workers(),
+            resources: default_resources(),
         }
     }
 }
@@ -48,17 +50,20 @@ impl Default for GlobalConfigSpec {
 pub struct GlobalConfig {
     pub ip: String,
     pub port: u32,
-    pub workers: usize,
+    pub resources: TaskResources,
     pub tracker: mpsc::UnboundedSender<TrackerMessage>,
     pub executor: mpsc::UnboundedSender<ExecutorMessage>,
 }
 
 impl GlobalConfig {
     pub fn new(spec: &GlobalConfigSpec) -> Self {
-        let workers = spec.workers;
+        let def_res = default_resources();
+        let cores = def_res.get("cores").unwrap();
+
+        let workers = spec.resources.get("cores").unwrap_or(&cores);
 
         let (executor, exe_rx) = mpsc::unbounded_channel();
-        local_executor::start(workers, exe_rx);
+        local_executor::start(*workers as usize, exe_rx);
 
         // Tracker
         let (tracker, trx) = mpsc::unbounded_channel();
@@ -67,7 +72,7 @@ impl GlobalConfig {
         GlobalConfig {
             ip: spec.ip.clone(),
             port: spec.port,
-            workers,
+            resources: spec.resources.clone(),
             tracker,
             executor,
         }

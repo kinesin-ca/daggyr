@@ -27,6 +27,10 @@ impl DerefMut for TaskResources {
 }
 
 impl TaskResources {
+    pub fn new() -> Self {
+        TaskResources(HashMap::new())
+    }
+
     pub fn can_satisfy(&self, requirements: &TaskResources) -> bool {
         requirements
             .iter()

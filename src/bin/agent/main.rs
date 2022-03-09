@@ -15,6 +15,10 @@ struct SimpleError {
     error: String,
 }
 
+async fn get_resources(data: web::Data<GlobalConfig>) -> impl Responder {
+    HttpResponse::Ok().json(data.resources.clone())
+}
+
 async fn submit_task(
     path: web::Path<(RunID, TaskID)>,
     task: web::Json<Task>,
@@ -146,9 +150,10 @@ async fn main() -> std::io::Result<()> {
             .app_data(json_config)
             .route("/ready", web::get().to(ready))
             .service(
-                web::scope("/api/v1/run")
-                    .route("/{run_id}/{task_id}", web::post().to(submit_task))
-                    .route("/{run_id}/{task_id}", web::delete().to(stop_task)),
+                web::scope("/api/v1")
+                    .route("/resources", web::get().to(get_resources))
+                    .route("/run/{run_id}/{task_id}", web::post().to(submit_task))
+                    .route("/run/{run_id}/{task_id}", web::delete().to(stop_task)),
             )
     })
     .bind(config.listen_spec())?

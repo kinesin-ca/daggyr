@@ -15,6 +15,7 @@ use futures::StreamExt;
 pub struct AgentTarget {
     pub base_url: String,
 
+    #[serde(default)]
     pub resources: TaskResources,
 }
 
@@ -86,13 +87,31 @@ struct RunningTask {
 
 /// The mpsc channel can be sized to fit max parallelism
 async fn start_agent_executor(
-    targets: Vec<AgentTarget>,
+    mut targets: Vec<AgentTarget>,
     mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>,
 ) {
+    let client = reqwest::Client::new();
+
     // pre-calculate the largest task we can dispatch
+    for target in targets.iter_mut() {
+        let resource_url = format!("{}/resources", target.base_url);
+        let result = client
+            .get(resource_url)
+            .send()
+            .await
+            .expect(&format!("Unable to query {}", target.base_url));
+        match result.status() {
+            reqwest::StatusCode::OK => {
+                target.resources = result.json().await.unwrap();
+            }
+            _ => {
+                panic!("Unable to query {}", target.base_url);
+            }
+        }
+    }
+
     let max_caps: Vec<TaskResources> = targets.iter().map(|x| x.resources.clone()).collect();
     let mut cur_caps = max_caps.clone();
-    let client = reqwest::Client::new();
 
     // Set up the local executor
     let (le_tx, le_rx) = mpsc::unbounded_channel();
@@ -181,7 +200,7 @@ async fn start_agent_executor(
                                 })
                                 .unwrap_or(());
 
-                            let submit_url = format!("{}/{}/{}", base_url, run_id, task_id);
+                            let submit_url = format!("{}/run/{}/{}", base_url, run_id, task_id);
                             // TODO Handle the case where an agent stops responding
                             let result = submit_client
                                 .post(submit_url)

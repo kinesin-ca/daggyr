@@ -1,0 +1,14 @@
+{
+  "server": {
+    "ip": "0.0.0.0",
+    "port": 2503
+  },
+  "pools": {
+    "default": {
+      "executor": "agent",
+      "targets": [
+        { "base_url": "http://localhost:2504/api/v1/run", "resources": { "cores": 10 } }
+      ]
+    }
+  }
+}

@@ -4,14 +4,10 @@
     "port": 2503
   },
   "pools": {
-    "localhost": {
-      "executor": "local",
-      "workers": 5
-    },
     "local_ssh": {
       "executor": "ssh",
       "targets": [
-        { "host": "localhost", "resources": { "cores": 10, "memory_mb": 32768 } }
+        { "host": "localhost", "resources": { "cores": 10, "memory_mb": 2048 } }
       ]
     }
   }
