@@ -3,7 +3,7 @@ pub use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct ServerConfig {
     pub ip: String,
     pub port: u32,
@@ -65,6 +65,7 @@ pub struct GlobalConfigSpec {
     pub default_pool: String,
 }
 
+#[derive(Clone, Debug)]
 pub struct GlobalConfig {
     pub server: ServerConfig,
     pub pools: HashMap<String, mpsc::UnboundedSender<ExecutorMessage>>,
@@ -74,7 +75,7 @@ pub struct GlobalConfig {
 }
 
 impl GlobalConfig {
-    fn new(spec: GlobalConfigSpec) -> Self {
+    pub fn new(spec: &GlobalConfigSpec) -> Self {
         let pools = HashMap::new();
 
         use PoolConfig::*;
@@ -121,5 +122,9 @@ impl GlobalConfig {
             runner,
             default_pool,
         }
+    }
+
+    pub fn listen_spec(&self) -> String {
+        format!("{}:{}", self.server.ip, self.server.port)
     }
 }

@@ -6,10 +6,9 @@ use chrono::prelude::*;
 use config::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::env;
 
 use daggyr::prelude::*;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 #[derive(Serialize)]
 struct SimpleError {
@@ -26,6 +25,9 @@ struct RunSpec {
     tags: Tags,
     tasks: Vec<Task>,
     parameters: Parameters,
+
+    #[serde(default)]
+    pool: Option<String>,
 }
 
 fn min_datetime() -> DateTime<Utc> {
@@ -53,11 +55,11 @@ struct RunsSelection {
 
 async fn get_runs(
     criteria: web::Query<RunsSelection>,
-    data: web::Data<AppState>,
+    data: web::Data<GlobalConfig>,
 ) -> impl Responder {
     let (response, rx) = oneshot::channel();
 
-    data.log_tx
+    data.tracker
         .send(TrackerMessage::GetRuns {
             tags: criteria.tags.clone(),
             states: criteria.states.clone(),
@@ -70,17 +72,28 @@ async fn get_runs(
     HttpResponse::Ok().json(rx.await.unwrap_or(Vec::new()))
 }
 
-async fn submit_run(spec: web::Json<RunSpec>, data: web::Data<AppState>) -> impl Responder {
+async fn submit_run(spec: web::Json<RunSpec>, data: web::Data<GlobalConfig>) -> impl Responder {
     let (tx, rx) = oneshot::channel();
 
-    data.run_tx
+    let pool = match spec.pool {
+        Some(name) => name.clone(),
+        None => data.default_pool.clone(),
+    };
+
+    if !data.pools.contains_key(&pool) {
+        return HttpResponse::BadRequest().json(SimpleError {
+            error: format!("Pool {} is not defined", pool),
+        });
+    }
+
+    data.runner
         .send(RunnerMessage::Start {
             tags: spec.tags.clone(),
             tasks: spec.tasks.clone(),
             response: tx,
             parameters: spec.parameters.clone(),
-            tracker: data.log_tx.clone(),
-            executor: data.exe_tx.clone(),
+            tracker: data.tracker.clone(),
+            executor: data.pools.get(&pool).unwrap().clone(),
         })
         .unwrap();
 
@@ -92,11 +105,11 @@ async fn submit_run(spec: web::Json<RunSpec>, data: web::Data<AppState>) -> impl
     }
 }
 
-async fn get_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Responder {
+async fn get_run(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.log_tx
+    data.tracker
         .send(TrackerMessage::GetRun { run_id, response })
         .unwrap();
 
@@ -108,11 +121,11 @@ async fn get_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Resp
     }
 }
 
-async fn get_task_summary(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Responder {
+async fn get_task_summary(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.log_tx
+    data.tracker
         .send(TrackerMessage::GetTaskSummary { run_id, response })
         .unwrap();
 
@@ -124,11 +137,11 @@ async fn get_task_summary(path: web::Path<RunID>, data: web::Data<AppState>) -> 
     }
 }
 
-async fn get_run_state(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Responder {
+async fn get_run_state(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.log_tx
+    data.tracker
         .send(TrackerMessage::GetState { run_id, response })
         .unwrap();
 
@@ -140,11 +153,11 @@ async fn get_run_state(path: web::Path<RunID>, data: web::Data<AppState>) -> imp
     }
 }
 
-async fn get_run_tasks(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Responder {
+async fn get_run_tasks(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.log_tx
+    data.tracker
         .send(TrackerMessage::GetTaskSummary { run_id, response })
         .unwrap();
 
@@ -158,12 +171,12 @@ async fn get_run_tasks(path: web::Path<RunID>, data: web::Data<AppState>) -> imp
 
 async fn get_run_task(
     path: web::Path<(RunID, TaskID)>,
-    data: web::Data<AppState>,
+    data: web::Data<GlobalConfig>,
 ) -> impl Responder {
     let (run_id, task_id) = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.log_tx
+    data.tracker
         .send(TrackerMessage::GetTask {
             run_id,
             task_id,
@@ -181,9 +194,9 @@ async fn get_run_task(
 
 async fn submit_task_attempt(
     payload: web::Json<AttemptReport>,
-    data: web::Data<AppState>,
+    data: web::Data<GlobalConfig>,
 ) -> impl Responder {
-    data.run_tx
+    data.runner
         .send(RunnerMessage::ExecutionReport {
             run_id: payload.run_id,
             task_id: payload.task_id,
@@ -194,11 +207,11 @@ async fn submit_task_attempt(
     HttpResponse::Ok()
 }
 
-async fn stop_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Responder {
+async fn stop_run(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.run_tx
+    data.runner
         .send(RunnerMessage::StopRun { run_id, response })
         .unwrap();
 
@@ -206,14 +219,14 @@ async fn stop_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Res
     HttpResponse::Ok()
 }
 
-async fn retry_run(path: web::Path<RunID>, data: web::Data<AppState>) -> impl Responder {
+async fn retry_run(path: web::Path<RunID>, data: web::Data<GlobalConfig>) -> impl Responder {
     let run_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
-    data.run_tx
+    data.runner
         .send(RunnerMessage::Retry {
             run_id,
-            tracker: data.log_tx.clone(),
+            tracker: data.tracker.clone(),
             executor: data.exe_tx.clone(),
             response,
         })
@@ -231,80 +244,21 @@ async fn ready() -> impl Responder {
     HttpResponse::Ok()
 }
 
-struct AppState {
-    log_tx: mpsc::UnboundedSender<TrackerMessage>,
-    exe_tx: mpsc::UnboundedSender<ExecutorMessage>,
-    run_tx: mpsc::UnboundedSender<RunnerMessage>,
-}
-
-fn init(
-    config_file: &str,
-) -> (
-    mpsc::UnboundedSender<TrackerMessage>,
-    mpsc::UnboundedSender<ExecutorMessage>,
-    mpsc::UnboundedSender<RunnerMessage>,
-    String,
-) {
-    let (log_tx, log_rx) = mpsc::unbounded_channel();
-    let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-    let (run_tx, run_rx) = mpsc::unbounded_channel();
-
-    let config: GlobalConfig;
-    if config_file.is_empty() {
-        config = serde_json::from_str("{}").unwrap();
+fn init(config_file: &str) -> GlobalConfig {
+    let spec: GlobalConfigSpec = if config_file.is_empty() {
+        serde_json::from_str("{}").unwrap()
     } else {
         let json = std::fs::read_to_string(config_file)
             .expect(&format!("Unable to open {} for reading", config_file));
-        config = serde_json::from_str(&json).expect("Error parsing config json");
-    }
-
-    // Tracker
-    let tracker = env::var("DAGGYR_TRACKER").unwrap_or("memory".to_owned());
-    match tracker.as_ref() {
-        "memory" => memory_tracker::start(log_rx),
-        _ => panic!("Unknown tracker: {}", tracker),
+        serde_json::from_str(&json).expect("Error parsing config json")
     };
 
-    // Executor
-    let executor = env::var("DAGGYR_EXECUTOR").unwrap_or("local".to_owned());
-    match executor.as_ref() {
-        "local" => {
-            let workers = env::var("DAGGYR_LOCAL_EXECUTOR_WORKERS")
-                .unwrap_or("10".to_owned())
-                .parse::<usize>()
-                .expect("DAGGYR_LOCAL_EXECUTOR_WORKERS must be an unsigned number");
-            local_executor::start(workers, exe_rx);
-        }
-
-        #[cfg(feature = "slurm")]
-        "slurm" => {
-            let base_url = env::var("DAGGYR_SLURM_EXECUTOR_BASE_URL")
-                .expect("Missing required base url for slurm executor");
-            slurm_executor::start(base_url, exe_rx);
-        }
-
-        _ => panic!("Unknown executor: {}", tracker),
-    };
-
-    let rtx = run_tx.clone();
-    runner::start(rtx, run_rx);
-
-    let listen_spec = format!(
-        "{}:{}",
-        env::var("DAGGYR_IP").unwrap_or("127.0.0.1".to_owned()),
-        env::var("DAGGYR_PORT").unwrap_or("2503".to_owned())
-    );
-
-    (log_tx, exe_tx, run_tx, listen_spec)
+    GlobalConfig::new(&spec)
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let (log_tx, exe_tx, run_tx, listen_spec) = init();
-
-    let l_tx = log_tx.clone();
-    let e_tx = exe_tx.clone();
-    let r_tx = run_tx.clone();
+    let config = init("");
 
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let res = HttpServer::new(move || {
@@ -348,11 +302,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(cors)
-            .app_data(web::Data::new(AppState {
-                log_tx: l_tx.clone(),
-                exe_tx: e_tx.clone(),
-                run_tx: r_tx.clone(),
-            }))
+            .app_data(web::Data::new(config))
             .wrap(Logger::new(
                 r#"%a "%r" %s %b "%{Referer}i" "%{User-Agent}i" %T"#,
             ))
@@ -375,13 +325,15 @@ async fn main() -> std::io::Result<()> {
                     ),
             )
     })
-    .bind(listen_spec)?
+    .bind(config.listen_spec())?
     .run()
     .await;
 
-    run_tx.send(RunnerMessage::Stop {}).unwrap();
-    exe_tx.send(ExecutorMessage::Stop {}).unwrap();
-    log_tx.send(TrackerMessage::Stop {}).unwrap();
+    config.runner.send(RunnerMessage::Stop {}).unwrap();
+    for exe_tx in config.pools.values() {
+        exe_tx.send(ExecutorMessage::Stop {}).unwrap();
+    }
+    config.tracker.send(TrackerMessage::Stop {}).unwrap();
 
     res
 }
