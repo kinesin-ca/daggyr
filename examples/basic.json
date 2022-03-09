@@ -1,0 +1,24 @@
+{
+  "server": {
+    "ip": "0.0.0.0",
+    "port": 2503,
+    "default_pool": "local"
+  },
+  "pools": {
+    "local": {
+      "executor": "local",
+      "workers": 10,
+    },
+    "slurm": {
+      "executor": "slurm",
+      "base_url": "http://localhost:6820/slurm/v0.0.36"
+    },
+    "ssh": {
+      "executor": "ssh",
+      "targets": [
+        { "host": "host_a", "user": "bob", "resources": { "cores": 20, "memory_mb": 2048 } },
+        { "host": "host_b", "user": "bob", "resources": { "cores": 72, "memory_mb": 2048 }, "port": 2200 }
+      ]
+    }
+  }
+}

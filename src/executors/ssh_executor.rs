@@ -12,12 +12,20 @@ use tokio::sync::mpsc;
 
 use futures::StreamExt;
 
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SSHTarget {
-    host: String,
-    port: Option<u16>,
-    private_key_file: Option<String>,
-    user: Option<String>,
-    resources: TaskResources,
+    pub host: String,
+
+    #[serde(default)]
+    pub port: Option<u16>,
+
+    #[serde(default)]
+    pub private_key_file: Option<String>,
+
+    #[serde(default)]
+    pub user: Option<String>,
+
+    pub resources: TaskResources,
 }
 
 impl SSHTarget {

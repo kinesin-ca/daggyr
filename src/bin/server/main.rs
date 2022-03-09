@@ -1,9 +1,9 @@
-extern crate dotenv;
+mod config;
 
 use actix_cors::Cors;
 use actix_web::{error, middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use chrono::prelude::*;
-use dotenv::dotenv;
+use config::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::env;
@@ -237,17 +237,26 @@ struct AppState {
     run_tx: mpsc::UnboundedSender<RunnerMessage>,
 }
 
-fn init() -> (
+fn init(
+    config_file: &str,
+) -> (
     mpsc::UnboundedSender<TrackerMessage>,
     mpsc::UnboundedSender<ExecutorMessage>,
     mpsc::UnboundedSender<RunnerMessage>,
     String,
 ) {
-    dotenv().ok();
-
     let (log_tx, log_rx) = mpsc::unbounded_channel();
     let (exe_tx, exe_rx) = mpsc::unbounded_channel();
     let (run_tx, run_rx) = mpsc::unbounded_channel();
+
+    let config: GlobalConfig;
+    if config_file.is_empty() {
+        config = serde_json::from_str("{}").unwrap();
+    } else {
+        let json = std::fs::read_to_string(config_file)
+            .expect(&format!("Unable to open {} for reading", config_file));
+        config = serde_json::from_str(&json).expect("Error parsing config json");
+    }
 
     // Tracker
     let tracker = env::var("DAGGYR_TRACKER").unwrap_or("memory".to_owned());
