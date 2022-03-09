@@ -3,8 +3,7 @@ pub use crate::runner;
 pub use crate::structs::*;
 
 // Executors
-pub use crate::executors::local_executor;
-pub use crate::executors::ssh_executor;
+pub use crate::executors::*;
 
 // Trackers
-pub use crate::trackers::memory_tracker;
+pub use crate::trackers::*;
