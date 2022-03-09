@@ -10,7 +10,7 @@ pub type TaskID = usize;
 pub type Tags = HashSet<String>;
 pub type Parameters = HashMap<String, Vec<String>>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct TaskResources(HashMap<String, i64>);
 
 impl Deref for TaskResources {

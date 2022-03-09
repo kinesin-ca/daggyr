@@ -25,8 +25,13 @@ pub enum PoolConfig {
     Local {
         workers: usize,
     },
+
     SSH {
         targets: Vec<daggyr::executors::ssh_executor::SSHTarget>,
+    },
+
+    Agent {
+        targets: Vec<daggyr::executors::agent_executor::AgentTarget>,
     },
 
     #[cfg(feature = "slurm")]
@@ -87,8 +92,13 @@ impl GlobalConfig {
                 Local { workers } => {
                     local_executor::start(*workers, rx);
                 }
+
                 SSH { targets } => {
                     ssh_executor::start(targets.clone(), rx);
+                }
+
+                Agent { targets } => {
+                    agent_executor::start(targets.clone(), rx);
                 }
 
                 #[cfg(feature = "slurm")]
