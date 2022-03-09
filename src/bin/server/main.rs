@@ -266,6 +266,14 @@ fn init() -> (
                 .expect("DAGGYR_LOCAL_EXECUTOR_WORKERS must be an unsigned number");
             local_executor::start(workers, exe_rx);
         }
+
+        #[cfg(feature = "slurm")]
+        "slurm" => {
+            let base_url = env::var("DAGGYR_SLURM_EXECUTOR_BASE_URL")
+                .expect("Missing required base url for slurm executor");
+            slurm_executor::start(base_url, exe_rx);
+        }
+
         _ => panic!("Unknown executor: {}", tracker),
     };
 
