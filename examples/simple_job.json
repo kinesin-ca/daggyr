@@ -1,0 +1,16 @@
+{
+  "tags": [ "abc" ],
+  "parameters": {
+    "{{DATE}}": [ "2022-01-01", "2022-01-02" ]
+  },
+  "tasks": [
+    { "class": "a",
+      "details": {
+        "command": ["echo", "{{DATE}}"],
+        "environment": {
+          "TEST_ENV": "{{DATE}}"
+        }
+      }
+    }
+  ]
+}
