@@ -8,12 +8,12 @@ work flows, especially Fetch, Extract, Transform, Load (FETL) workloads.
 Features
 ========
 
-- Scalability - Runs can scale to millions of tasks with dependencies
-- Resuming Runs - Runs can be edited and re-queued, picking up where it left off
-- Task Generators - Tasks can generate other tasks
-- Parameterized Tasks - Tasks can be expanded using a flexible templating approach.
-- Simplicity - DaggyR is simple to get started using without any extra infrastructure
-- Flexibility - Flexible state tracking and execution back ends
+- **Scalability** - Runs can scale to millions of tasks with dependencies
+- **Resuming Runs** - Runs can be edited and re-queued, picking up where it left off
+- **Task Generators** - Tasks can generate other tasks
+- **Parameterized Tasks** - Tasks can be expanded using a flexible templating approach.
+- **Simplicity** - DaggyR is simple to get started using without any extra infrastructure
+- **Flexibility** - Flexible state tracking and execution back ends
 
 DaggyR is written entirely in async Rust, to scale and run workloads as
 quickly as possible.
@@ -61,9 +61,9 @@ Overview
 Below is an example workflow where data are pulled from three sources
 (A, B, C), some work is done on them, and a report is generated.
 
-Each step depends on the success of its upstream dependencies, e.g.
-`Derive_Data_AB` can't run until `Transform_A` and `Transform_B` have
-completed successfully.
+Each step will only run once its upstream dependencies have completed
+successfully, e.g.  `Derive_Data_AB` can't run until `Transform_A` and
+`Transform_B` have completed successfully.
 
 ```mermaid
 graph LR
@@ -83,10 +83,54 @@ Individual tasks (vertices) are queued as soon as their upstream tasks have
 completed successfully, and run via a task executor back end as soon as
 that back end has capacity.
 
+Run Specifications
+------------------
+
+A run specification includes three parts:
+
+1. Tags
+  - Tags are `key: value` arbitrary pairs.
+  - Keys and values must be strings
+  - They can be used to annotate and search for runs
+1. Tasks
+  - Tasks define a unit of work, and its relationship to other tasks.
+  - Tasks can be templated, and expanded using `parameters` while maintaining dependencies.
+1. Parameters
+  - Parameters are `key: [value]` pairs that are used to expand task templates.
+
+Here is an example of a full specification:
+
+```json
+{
+  "tags": {
+    "env": "test"
+  },
+  "parameters": {
+    "{{VAR}}": [ "value1", "value2", ... ]
+  },
+  "tasks": [
+    {
+      "class": "producer",
+      "details": { ... },
+    },
+    {
+      "class": "echoer",
+      "details": { ... },
+      "parents": [
+        "echoer"
+      ]
+    },
+  ]
+```
+
+Tasks
+-----
+
+
 Executors
 ---------
 
-Daggy supports multiple executor back ends:
+DaggyR relies on back-end executors to actually run tasks.
 
 - Local executor (via fork)
 - [Slurm](https://slurm.schedmd.com/overview.html)

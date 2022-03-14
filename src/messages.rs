@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 pub enum TrackerMessage {
     // Creation
     CreateRun {
-        tags: Tags,
+        tags: RunTags,
         parameters: Parameters,
         response: oneshot::Sender<Result<RunID>>,
     },
@@ -39,7 +39,7 @@ pub enum TrackerMessage {
     // Queries
     /// Defaults to running states
     GetRuns {
-        tags: Tags,
+        tags: RunTags,
         states: HashSet<State>,
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
@@ -80,7 +80,7 @@ pub enum TrackerMessage {
 #[derive(Debug)]
 pub enum RunnerMessage {
     Start {
-        tags: Tags,
+        tags: RunTags,
         tasks: Vec<Task>,
         parameters: Parameters,
         tracker: mpsc::UnboundedSender<TrackerMessage>,

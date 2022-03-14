@@ -94,7 +94,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 let default_state = StateChange::new(State::Queued);
 
                 for (i, run) in runs.iter().enumerate() {
-                    if !tags.is_empty() && run.tags.is_disjoint(&tags) {
+                    if !tags.is_empty() && !run.tags.matches(&tags) {
                         continue;
                     }
 
@@ -245,7 +245,7 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         trx_tx
             .send(CreateRun {
-                tags: HashSet::new(),
+                tags: RunTags::new(),
                 parameters: Parameters::new(),
                 response: tx,
             })

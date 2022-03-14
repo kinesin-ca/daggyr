@@ -7,8 +7,46 @@ use std::ops::{Deref, DerefMut};
 
 pub type RunID = usize;
 pub type TaskID = usize;
-pub type Tags = HashSet<String>;
+// pub type RunTags = HashMap<String, String>;
 pub type Parameters = HashMap<String, Vec<String>>;
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct RunTags(HashMap<String, String>);
+
+impl RunTags {
+    pub fn new() -> Self {
+        RunTags(HashMap::new())
+    }
+
+    pub fn matches(&self, other: &RunTags) -> bool {
+        for (k, v) in other.iter() {
+            match self.get(k) {
+                Some(val) => {
+                    if val != v {
+                        return false;
+                    }
+                }
+                None => {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+}
+
+impl Deref for RunTags {
+    type Target = HashMap<String, String>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for RunTags {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct TaskResources(HashMap<String, i64>);
@@ -231,14 +269,14 @@ impl TaskRecord {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RunRecord {
-    pub tags: Tags,
+    pub tags: RunTags,
     pub parameters: Parameters,
     pub tasks: Vec<TaskRecord>,
     pub state_changes: Vec<StateChange>,
 }
 
 impl RunRecord {
-    pub fn new(tags: Tags, parameters: Parameters) -> Self {
+    pub fn new(tags: RunTags, parameters: Parameters) -> Self {
         RunRecord {
             tags,
             parameters,
@@ -251,7 +289,7 @@ impl RunRecord {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RunSummary {
     pub run_id: RunID,
-    pub tags: Tags,
+    pub tags: RunTags,
     pub state: State,
     pub start_time: DateTime<Utc>,
     pub last_update_time: DateTime<Utc>,
@@ -259,7 +297,7 @@ pub struct RunSummary {
 }
 
 impl RunSummary {
-    pub fn new(run_id: RunID, tags: Tags, state: State) -> Self {
+    pub fn new(run_id: RunID, tags: RunTags, state: State) -> Self {
         RunSummary {
             run_id,
             tags,

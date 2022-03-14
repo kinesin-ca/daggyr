@@ -1,7 +1,7 @@
 use super::*;
 use crate::dag::DAG;
 use crate::messages::*;
-use crate::structs::{Parameters, RunID, State, Tags, Task, TaskAttempt, TaskID};
+use crate::structs::{Parameters, RunID, RunTags, State, Task, TaskAttempt, TaskID};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
@@ -21,7 +21,7 @@ struct Run {
 
 impl Run {
     async fn new(
-        tags: Tags,
+        tags: RunTags,
         tasks: Vec<Task>,
         parameters: Parameters,
         tracker: mpsc::UnboundedSender<TrackerMessage>,
@@ -524,7 +524,7 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         run_tx
             .send(RunnerMessage::Start {
-                tags: Tags::new(),
+                tags: RunTags::new(),
                 tasks: tasks.clone(),
                 response: tx,
                 parameters: parameters.clone(),

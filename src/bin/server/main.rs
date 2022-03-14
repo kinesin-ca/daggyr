@@ -24,8 +24,12 @@ struct RunIDResponse {
 
 #[derive(Clone, Deserialize)]
 struct RunSpec {
-    tags: Tags,
+    #[serde(default)]
+    tags: RunTags,
+
     tasks: Vec<Task>,
+
+    #[serde(default)]
     parameters: Parameters,
 
     #[serde(default)]
@@ -43,7 +47,7 @@ fn max_datetime() -> DateTime<Utc> {
 #[derive(Clone, Deserialize)]
 struct RunsSelection {
     #[serde(default)]
-    tags: Tags,
+    tags: RunTags,
 
     #[serde(default)]
     states: HashSet<State>,
