@@ -3,7 +3,7 @@ DaggyR
 
 DaggyR is a work orchestration framework for running workflows modeled as
 directed, acyclic graphs (DAGs). These are quite useful for all kinds of
-work flows, especially Fetch, Extract, Transform, Load (FETL) workloads.
+work flows, especially Fetch, Extract, Transform, Load (ETL) workloads.
 
 Features
 ========
@@ -21,8 +21,9 @@ quickly as possible.
 Why Another Engine
 ==================
 
-[There](https://airflow.apache.org/) [are](https://luigi.readthedocs.io/en/stable/index.html) [many](https://azkaban.github.io/) [DAG](https://prefect.io) [frameworks](https://www.dagster.io/) out there,
-so why create another one?
+There are [many](https://airflow.apache.org/), [many](https://luigi.readthedocs.io/en/stable/index.html),
+[many](https://azkaban.github.io/), [many](https://prefect.io), [many](https://www.dagster.io/) variations
+of DAG work orchestration frameworks out there, so why create another one?
 
 One Tool to do One Thing Well
 -----------------------------
