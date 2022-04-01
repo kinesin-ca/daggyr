@@ -48,10 +48,7 @@ async fn validate_tasks(tasks: Vec<Task>) -> Result<(), Vec<String>> {
     }
 }
 
-async fn expand_tasks(
-    tasks: HashMap<TaskID, Task>,
-    parameters: Parameters,
-) -> Result<HashMap<TaskID, Task>> {
+async fn expand_tasks(tasks: TaskSet, parameters: Parameters) -> Result<TaskSet> {
     let mut expanded_tasks = HashMap::new();
 
     for (task_id, task) in tasks {

@@ -13,7 +13,7 @@ pub enum TrackerMessage {
     // Updates
     AddTasks {
         run_id: RunID,
-        tasks: HashMap<TaskID, Task>,
+        tasks: TaskSet,
     },
     UpdateTask {
         task_id: TaskID,
@@ -76,7 +76,7 @@ pub enum TrackerMessage {
 pub enum RunnerMessage {
     Start {
         tags: RunTags,
-        tasks: HashMap<TaskID, Task>,
+        tasks: TaskSet,
         parameters: Parameters,
         tracker: mpsc::UnboundedSender<TrackerMessage>,
         executor: mpsc::UnboundedSender<ExecutorMessage>,
@@ -106,9 +106,9 @@ pub enum ExecutorMessage {
         response: oneshot::Sender<Result<(), Vec<String>>>,
     },
     ExpandTasks {
-        tasks: HashMap<TaskID, Task>,
+        tasks: TaskSet,
         parameters: Parameters,
-        response: oneshot::Sender<Result<HashMap<TaskID, Task>>>,
+        response: oneshot::Sender<Result<TaskSet>>,
     },
     ExecuteTask {
         task_id: TaskID,

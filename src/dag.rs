@@ -6,7 +6,7 @@ use std::hash::Hash;
 
 #[derive(Clone, Debug)]
 pub struct Vertex<T> {
-    id: T,
+    pub id: T,
     children: HashSet<usize>,
     parents: HashSet<usize>,
     pub state: State,
@@ -46,12 +46,21 @@ where
         }
     }
 
+    pub fn get_vertex(&self, key: &T) -> Option<Vertex<T>> {
+        match self.keymap.get(key) {
+            Some(idx) => Some(self.vertices[*idx].clone()),
+            None => None,
+        }
+    }
+
     pub fn add_vertex(&mut self, key: T) -> Result<()> {
         if self.keymap.contains_key(&key) {
             Err(anyhow!("DAG already contains a vertex with key {:?}", key))
         } else {
-            self.keymap.insert(key.clone(), self.vertices.len());
+            let idx = self.vertices.len();
+            self.keymap.insert(key.clone(), idx);
             self.vertices.push(Vertex::new(key));
+            self.ready.insert(idx);
             Ok(())
         }
     }

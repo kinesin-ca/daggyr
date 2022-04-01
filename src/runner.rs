@@ -1,7 +1,7 @@
 use super::*;
 use crate::dag::DAG;
 use crate::messages::*;
-use crate::structs::{Parameters, RunID, RunTags, State, Task, TaskAttempt, TaskID};
+use crate::structs::*;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
@@ -9,10 +9,10 @@ use tokio::sync::{mpsc, oneshot};
 /// executing task DAG.
 struct Run {
     run_id: RunID,
-    tasks: Vec<Task>,
-    dag: DAG,
+    tasks: TaskSet,
+    dag: DAG<TaskID>,
     state: State,
-    class_tasks: HashMap<String, HashSet<usize>>,
+    name_tasks: HashMap<String, HashSet<TaskID>>,
     parameters: Parameters,
     tracker: mpsc::UnboundedSender<TrackerMessage>,
     executor: mpsc::UnboundedSender<ExecutorMessage>,
@@ -22,7 +22,7 @@ struct Run {
 impl Run {
     async fn new(
         tags: RunTags,
-        tasks: Vec<Task>,
+        tasks: TaskSet,
         parameters: Parameters,
         tracker: mpsc::UnboundedSender<TrackerMessage>,
         executor: mpsc::UnboundedSender<ExecutorMessage>,
@@ -30,10 +30,10 @@ impl Run {
     ) -> Result<Self> {
         let mut run = Run {
             run_id: 0,
-            tasks: Vec::new(),
+            tasks: TaskSet::new(),
             dag: DAG::new(),
             state: State::Queued,
-            class_tasks: HashMap::new(),
+            name_tasks: HashMap::new(),
             parameters,
             tracker: tracker.clone(),
             executor,
@@ -44,14 +44,12 @@ impl Run {
         let (tx, rx) = oneshot::channel();
         run.executor
             .send(ExecutorMessage::ExpandTasks {
-                tasks: tasks,
+                tasks,
                 parameters: run.parameters.clone(),
                 response: tx,
             })
             .unwrap();
-        let tasks = rx.await??;
-
-        run.add_tasks(&tasks)?;
+        let exp_tasks = rx.await??;
 
         // Create the run ID and update the tracker
         let (tx, rx) = oneshot::channel();
@@ -64,12 +62,20 @@ impl Run {
             .unwrap();
         run.run_id = rx.await??;
 
+        // Set the RunID on the tasks
+        let mut updated_tasks = TaskSet::new();
+        for (mut task_id, task) in exp_tasks {
+            task_id.run_id = run.run_id;
+            updated_tasks.insert(task_id, task);
+        }
+
+        run.add_tasks(&updated_tasks)?;
+
         // Let the tracker know
         run.tracker
             .send(TrackerMessage::AddTasks {
                 run_id: run.run_id,
-                tasks: tasks,
-                offset: 0,
+                tasks: updated_tasks,
             })
             .unwrap();
 
@@ -96,13 +102,13 @@ impl Run {
         let run_record = rx.await??;
 
         // Build the set of tasks and states
-        let mut tasks = Vec::new();
+        let mut tasks = TaskSet::new();
 
         // States for previously run tasks are reset to queued
-        let mut states = Vec::new();
+        let mut states = HashMap::new();
 
-        for tr in run_record.tasks {
-            tasks.push(tr.task);
+        for (task_id, tr) in run_record.tasks {
+            tasks.insert(task_id.clone(), tr.task);
             let new_state = match tr.state_changes.last() {
                 Some(change) => match change.state {
                     State::Completed => State::Completed,
@@ -111,16 +117,16 @@ impl Run {
                 None => State::Queued,
             };
 
-            states.push(new_state);
+            states.insert(task_id, new_state);
         }
 
         // Build the run
         let mut run = Run {
             run_id: run_id,
-            tasks: Vec::new(),
+            tasks: TaskSet::new(),
             dag: DAG::new(),
             state: State::Running,
-            class_tasks: HashMap::new(),
+            name_tasks: HashMap::new(),
             parameters: run_record.parameters,
             tracker,
             executor,
@@ -130,14 +136,10 @@ impl Run {
         run.add_tasks(&tasks)?;
 
         // Update the task states
-        for (task_id, state) in states.iter().enumerate() {
-            run.dag.set_vertex_state(task_id, *state)?;
+        for (task_id, state) in states {
+            run.dag.set_vertex_state(task_id.clone(), state)?;
             run.tracker
-                .send(TrackerMessage::UpdateTaskState {
-                    run_id: run.run_id,
-                    task_id,
-                    state: *state,
-                })
+                .send(TrackerMessage::UpdateTaskState { task_id, state })
                 .unwrap();
         }
 
@@ -157,41 +159,38 @@ impl Run {
     }
 
     /// Adds the tasks and sets up the DAG
-    fn add_tasks(&mut self, tasks: &Vec<Task>) -> Result<()> {
-        let offset = self.tasks.len();
-
+    fn add_tasks(&mut self, tasks: &TaskSet) -> Result<()> {
+        let task_ids: Vec<TaskID> = tasks.keys().cloned().collect();
         // Add vertices
-        self.dag.add_vertices(tasks.len());
+        self.dag.add_vertices(&task_ids)?;
 
-        // Figure out the class maps
-        for (i, task) in tasks.iter().enumerate() {
-            let tid = i + offset;
-            match self.class_tasks.get_mut(&task.class) {
+        // Figure out the name maps
+        for task_id in tasks.keys() {
+            match self.name_tasks.get_mut(&task_id.name) {
                 Some(tids) => {
-                    tids.insert(tid);
+                    tids.insert(task_id.clone());
                 }
                 None => {
                     let mut tids = HashSet::new();
-                    tids.insert(tid);
-                    self.class_tasks.insert(task.class.clone(), tids);
+                    tids.insert(task_id.clone());
+                    self.name_tasks.insert(task_id.name.clone(), tids);
                 }
             }
         }
 
         // Insert edges
-        for (i, task) in tasks.iter().enumerate() {
-            let src = i + offset;
+        for (task_id, task) in tasks.iter() {
             for child in task.children.iter() {
-                match self.class_tasks.get(child) {
+                match self.name_tasks.get(child) {
                     Some(dests) => {
                         for tid in dests {
-                            self.dag.add_edge(src, *tid)?;
+                            self.dag.add_edge(task_id, tid)?;
                         }
                     }
                     None => {
                         return Err(anyhow!(
                             "Task {} has child {} which does not exist in the DAG",
-                            task.class,
+                            task_id.name,
                             child
                         ));
                     }
@@ -200,16 +199,16 @@ impl Run {
 
             // Same for parents, but in the other direction
             for parent in task.parents.iter() {
-                match self.class_tasks.get(parent) {
+                match self.name_tasks.get(parent) {
                     Some(srcs) => {
                         for tid in srcs {
-                            self.dag.add_edge(*tid, src)?;
+                            self.dag.add_edge(tid, task_id)?;
                         }
                     }
                     None => {
                         return Err(anyhow!(
                             "Task {} has parent {} which does not exist in the DAG",
-                            task.class,
+                            task_id.name,
                             parent
                         ));
                     }
@@ -249,31 +248,36 @@ impl Run {
 
         // Enqueue as many tasks as possible
         loop {
-            match self.dag.visit_next() {
-                Some(task_id) => {
-                    // Start the executor
-                    self.executor
-                        .send(ExecutorMessage::ExecuteTask {
-                            run_id: self.run_id,
-                            task_id: task_id,
-                            task: self.tasks[task_id].clone(),
-                            response: self.runner.clone(),
-                            tracker: self.tracker.clone(),
-                        })
-                        .unwrap_or(());
-                    // TODO this should probably be an error
-                }
-                None => break,
+            if let Some(task_id) = self.dag.visit_next() {
+                // Start the executor
+                self.executor
+                    .send(ExecutorMessage::ExecuteTask {
+                        task_id: task_id.clone(),
+                        task: self.tasks.get(&task_id).unwrap().clone(),
+                        response: self.runner.clone(),
+                        tracker: self.tracker.clone(),
+                    })
+                    .unwrap_or(());
+                // TODO this should probably be an error
+            } else {
+                break;
             }
         }
         self.state
     }
 
-    pub async fn handle_generator(&mut self, task_id: usize, attempt: &TaskAttempt) -> Result<()> {
-        let tasks;
-        match serde_json::from_str::<Vec<Task>>(&attempt.output) {
+    pub async fn handle_generator(&mut self, task_id: TaskID, attempt: &TaskAttempt) -> Result<()> {
+        let mut tasks = TaskSet::new();
+        match serde_json::from_str::<TaskSetSpec>(&attempt.output) {
             Ok(result) => {
-                tasks = result;
+                for (name, task) in result.iter() {
+                    let new_id = TaskID {
+                        run_id: task_id.run_id,
+                        name: name.clone(),
+                        instance: 0,
+                    };
+                    tasks.insert(new_id, task.clone());
+                }
             }
             Err(e) => {
                 return Err(anyhow!("Unable to parse generator output: {}", e));
@@ -283,21 +287,21 @@ impl Run {
         let (tx, rx) = oneshot::channel();
         self.executor
             .send(ExecutorMessage::ExpandTasks {
-                tasks: tasks,
+                tasks,
                 parameters: self.parameters.clone(),
                 response: tx,
             })
             .unwrap();
         let mut exp_tasks = rx.await??;
-        let children = self.tasks[task_id].children.clone();
-        let parents = vec![self.tasks[task_id].class.clone()];
-        for task in exp_tasks.iter_mut() {
+        let gen_task = self.tasks.get(&task_id).unwrap();
+        let children = gen_task.children.clone();
+        let parents = vec![task_id.name.clone()];
+        for (_, task) in exp_tasks.iter_mut() {
             task.children = children.clone();
             task.parents = parents.clone();
         }
 
         // Set the parent and children for each task
-        let offset = self.tasks.len();
         self.add_tasks(&exp_tasks)?;
 
         // Let the tracker know
@@ -305,28 +309,25 @@ impl Run {
             .send(TrackerMessage::AddTasks {
                 run_id: self.run_id,
                 tasks: exp_tasks,
-                offset: offset,
             })
             .unwrap();
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<()> {
-        for (task_id, vertex) in self.dag.vertices.iter().enumerate() {
+        for vertex in self.dag.vertices.iter() {
             if vertex.state == State::Running {
                 let (response, cancel_rx) = oneshot::channel();
                 self.executor
                     .send(ExecutorMessage::StopTask {
-                        run_id: self.run_id,
-                        task_id,
+                        task_id: vertex.id.clone(),
                         response,
                     })
                     .unwrap();
                 cancel_rx.await.unwrap_or(());
                 self.tracker
                     .send(TrackerMessage::UpdateTaskState {
-                        run_id: self.run_id,
-                        task_id: task_id,
+                        task_id: vertex.id.clone(),
                         state: State::Killed,
                     })
                     .unwrap();
@@ -342,26 +343,26 @@ impl Run {
     }
 
     async fn handle_killed_task(&mut self, task_id: TaskID) -> Result<()> {
-        if self.dag.vertices[task_id].state == State::Killed {
+        if self.dag.get_vertex(&task_id).unwrap().state == State::Killed {
             return Ok(());
         }
 
-        self.dag.set_vertex_state(task_id, State::Killed).unwrap();
+        self.dag
+            .set_vertex_state(task_id.clone(), State::Killed)
+            .unwrap();
         self.tracker
             .send(TrackerMessage::UpdateTaskState {
-                run_id: self.run_id,
-                task_id: task_id,
+                task_id: task_id.clone(),
                 state: State::Killed,
             })
             .unwrap();
         Ok(())
     }
 
-    async fn complete_task(&mut self, task_id: TaskID, attempt: TaskAttempt) -> Result<()> {
+    async fn complete_task(&mut self, task_id: &TaskID, attempt: TaskAttempt) -> Result<()> {
         self.tracker
             .send(TrackerMessage::LogTaskAttempt {
-                run_id: self.run_id,
-                task_id,
+                task_id: task_id.clone(),
                 attempt: attempt.clone(),
             })
             .unwrap();
@@ -376,15 +377,14 @@ impl Run {
             }
         };
 
-        if new_state == State::Completed && self.tasks[task_id].is_generator {
-            if let Err(e) = self.handle_generator(task_id, &attempt).await {
+        if new_state == State::Completed && self.tasks[&task_id].is_generator {
+            if let Err(e) = self.handle_generator(task_id.clone(), &attempt).await {
                 new_state = State::Errored;
                 let mut generator_attempt = TaskAttempt::new();
                 generator_attempt.executor.push(format!("{:?}", e));
                 self.tracker
                     .send(TrackerMessage::LogTaskAttempt {
-                        run_id: self.run_id,
-                        task_id: task_id,
+                        task_id: task_id.clone(),
                         attempt: generator_attempt,
                     })
                     .unwrap();
@@ -394,14 +394,13 @@ impl Run {
         // Update the state
         self.tracker
             .send(TrackerMessage::UpdateTaskState {
-                run_id: self.run_id,
-                task_id: task_id,
+                task_id: task_id.clone(),
                 state: new_state,
             })
             .unwrap();
 
         self.dag
-            .complete_visit(task_id, new_state != State::Completed);
+            .complete_visit(&task_id, new_state != State::Completed)?;
         Ok(())
     }
 }
@@ -482,15 +481,11 @@ async fn start_dag_runner(
                     }
                 }
             }
-            ExecutionReport {
-                run_id,
-                task_id,
-                attempt,
-            } => {
-                if let Some(run) = runs.get_mut(&run_id) {
-                    run.complete_task(task_id, attempt).await.unwrap_or(());
+            ExecutionReport { task_id, attempt } => {
+                if let Some(run) = runs.get_mut(&task_id.run_id) {
+                    run.complete_task(&task_id, attempt).await.unwrap_or(());
                     if run.run().await != State::Running {
-                        runs.remove(&run_id);
+                        runs.remove(&task_id.run_id);
                     }
                 }
             }
@@ -508,7 +503,7 @@ mod tests {
     use crate::trackers::memory_tracker;
 
     async fn run(
-        tasks: &Vec<Task>,
+        tasks: &TaskSet,
         parameters: &Parameters,
     ) -> (RunID, mpsc::UnboundedSender<TrackerMessage>) {
         let (log_tx, log_rx) = mpsc::unbounded_channel();
@@ -563,11 +558,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_simple_dag_run() -> () {
-        let tasks: Vec<Task> = serde_json::from_str(
+        let tasks_spec: TaskSetSpec = serde_json::from_str(
             r#"
-            [
-                {
-                    "class": "simple_task",
+            {
+                "simple_task": {
                     "details": {
                         "command": [ "/bin/echo", "hello", "world" ],
                         "env": {
@@ -576,8 +570,7 @@ mod tests {
                     },
                     "children": [ "other_task" ]
                 },
-                {
-                    "class": "other_task",
+                "other_task": {
                     "details": {
                         "command": [ "/bin/echo", "task", "$ENVVAR" ],
                         "env": {
@@ -585,26 +578,28 @@ mod tests {
                         }
                     }
                 }
-            ]"#,
+            }"#,
         )
         .unwrap();
+
+        let tasks = tasks_spec.to_task_set();
 
         let parameters = HashMap::new();
 
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
-        for (tid, task) in tasks.iter().enumerate() {
+        for (mut task_id, task) in tasks {
+            task_id.run_id = run_id;
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {
-                    run_id: run_id,
-                    task_id: tid,
+                    task_id: task_id.clone(),
                     response: tx,
                 })
                 .unwrap();
 
             let task_record = rx.await.unwrap().unwrap();
-            assert_eq!(*task, task_record.task);
+            assert_eq!(task, task_record.task);
             assert_eq!(task_record.attempts.len(), 1);
             assert_eq!(
                 task_record.state_changes.last().unwrap().state,
@@ -618,11 +613,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_failing_generating_dag_run() -> () {
-        let tasks: Vec<Task> = serde_json::from_str(
-            r#"
-            [
-                {
-                    "class": "simple_task",
+        let tasks_spec: TaskSetSpec = serde_json::from_str(
+            r#"{
+                "simple_task": {
                     "details": {
                         "command": [ "/bin/echo", "hello", "world" ],
                         "env": {
@@ -632,8 +625,7 @@ mod tests {
                     "children": [ "other_task" ],
                     "is_generator": true
                 },
-                {
-                    "class": "other_task",
+                "other_task": {
                     "details": {
                         "command": [ "/bin/echo", "task", "$ENVVAR" ],
                         "env": {
@@ -641,28 +633,30 @@ mod tests {
                         }
                     }
                 }
-            ]"#,
+            }"#,
         )
         .unwrap();
+
+        let tasks = tasks_spec.to_task_set();
 
         let parameters = HashMap::new();
 
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
-        for (tid, task) in tasks.iter().enumerate() {
+        for (mut task_id, task) in tasks {
+            task_id.run_id = run_id;
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {
-                    run_id: run_id,
-                    task_id: tid,
+                    task_id: task_id.clone(),
                     response: tx,
                 })
                 .unwrap();
 
             let task_record = rx.await.unwrap().unwrap();
-            assert_eq!(*task, task_record.task);
+            assert_eq!(task, task_record.task);
 
-            match task.class.as_ref() {
+            match task_id.name.as_ref() {
                 "simple_task" => {
                     assert_eq!(task_record.state_changes.len(), 3);
                     assert_eq!(
@@ -688,59 +682,72 @@ mod tests {
     async fn test_successful_generating_dag_run() -> () {
         use serde_json::json;
 
-        let mut tasks: Vec<Task> = serde_json::from_str(
-            r#"
-            [
-                {
-                    "class": "other_task",
+        let tasks_spec: TaskSetSpec = serde_json::from_str(
+            r#"{
+                "other_task": {
                     "details": {
                         "command": [ "/bin/echo", "task", "$ENVVAR" ]
                     }
                 }
-            ]"#,
+            }"#,
         )
         .unwrap();
 
-        let new_task = r#"[ {
-            "class": "generated_task",
-            "details": {
-                "command": [ "/bin/echo", "hello", "world" ]
+        let new_task = r#"{
+            "generated_task": {
+                "details": {
+                    "command": [ "/bin/echo", "hello", "world" ]
                 }
-        }]"#;
+            }
+        }"#;
 
+        let mut tasks = tasks_spec.to_task_set();
         let parameters = HashMap::new();
+
+        let task_id = TaskID {
+            run_id: 0,
+            name: "fancy_generator".to_owned(),
+            instance: 0,
+        };
 
         let mut gen_task = Task::new();
         gen_task.is_generator = true;
-        gen_task.class = "fancy_generator".to_owned();
         gen_task.children.push("other_task".to_owned());
         gen_task.details = json!({
             "command": [ "/bin/echo", new_task ]
         });
 
-        tasks.push(gen_task);
+        tasks.insert(task_id, gen_task);
 
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
-        let mut new_tasks: Vec<Task> = serde_json::from_str(new_task).unwrap();
-        new_tasks[0].children.push("other_task".to_owned());
-        new_tasks[0].parents.push("fancy_generator".to_owned());
-        tasks.append(&mut new_tasks);
+        let new_tasks_spec: TaskSetSpec = serde_json::from_str(new_task).unwrap();
+        let mut new_tasks = new_tasks_spec.to_task_set();
+        for (task_id, task) in new_tasks.iter_mut() {
+            task.children.push("other_task".to_owned());
+            task.parents.push("fancy_generator".to_owned());
+            let new_id = TaskID {
+                run_id: run_id,
+                name: task_id.name.clone(),
+                instance: 0,
+            };
+            tasks.insert(new_id, task.clone());
+        }
 
         assert_eq!(tasks.len(), 3);
 
-        for (tid, task) in tasks.iter().enumerate() {
+        for (mut task_id, task) in tasks {
+            task_id.run_id = run_id;
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {
-                    run_id: run_id,
-                    task_id: tid,
+                    task_id,
                     response: tx,
                 })
                 .unwrap();
 
             let task_record = rx.await.unwrap().unwrap();
-            assert_eq!(*task, task_record.task);
+            assert_eq!(task, task_record.task);
 
             assert_eq!(task_record.state_changes.len(), 3);
             assert_eq!(

@@ -7,13 +7,6 @@ use std::ops::{Deref, DerefMut};
 
 pub type RunID = usize;
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default, Hash, PartialEq, Eq)]
-pub struct TaskID {
-    pub run_id: RunID,
-    pub name: String,
-    pub instance: usize,
-}
-
 pub type Parameters = HashMap<String, Vec<String>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -112,6 +105,13 @@ pub enum State {
     Killed,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default, Hash, PartialEq, Eq)]
+pub struct TaskID {
+    pub run_id: RunID,
+    pub name: String,
+    pub instance: usize,
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Task {
     #[serde(default)]
@@ -142,6 +142,45 @@ impl Task {
             children: Vec::new(),
             parents: Vec::new(),
         }
+    }
+}
+
+pub type TaskSet = HashMap<TaskID, Task>;
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct TaskSetSpec(HashMap<String, Task>);
+
+impl Deref for TaskSetSpec {
+    type Target = HashMap<String, Task>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TaskSetSpec {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl TaskSetSpec {
+    pub fn new() -> Self {
+        TaskSetSpec(HashMap::new())
+    }
+
+    pub fn to_task_set(&self) -> TaskSet {
+        self.iter()
+            .map(|(name, task)| {
+                (
+                    TaskID {
+                        run_id: 0,
+                        name: name.clone(),
+                        instance: 0,
+                    },
+                    task.clone(),
+                )
+            })
+            .collect()
     }
 }
 
