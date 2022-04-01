@@ -48,10 +48,13 @@ async fn validate_tasks(tasks: Vec<Task>) -> Result<(), Vec<String>> {
     }
 }
 
-async fn expand_tasks(tasks: Vec<Task>, parameters: Parameters) -> Result<Vec<Task>> {
-    let mut expanded_tasks = Vec::new();
+async fn expand_tasks(
+    tasks: HashMap<TaskID, Task>,
+    parameters: Parameters,
+) -> Result<HashMap<TaskID, Task>> {
+    let mut expanded_tasks = HashMap::new();
 
-    for task in tasks {
+    for (task_id, task) in tasks {
         let template = get_task_details(&task)?;
 
         let all_vars: Vec<String> = parameters.keys().into_iter().cloned().collect();
@@ -70,7 +73,7 @@ async fn expand_tasks(tasks: Vec<Task>, parameters: Parameters) -> Result<Vec<Ta
             .collect();
 
         if vars.is_empty() {
-            expanded_tasks.push(task);
+            expanded_tasks.insert(task_id, task);
         } else {
             let new_cmds = apply_vars(&template.command, &parameters, &vars);
             let new_envs = apply_vars(&env_values, &parameters, &vars);
@@ -82,8 +85,9 @@ async fn expand_tasks(tasks: Vec<Task>, parameters: Parameters) -> Result<Vec<Ta
                     .cloned()
                     .zip(new_env_vals.iter().cloned())
                     .collect();
-                new_task.instance = i;
-                expanded_tasks.push(new_task);
+                let mut new_task_id = task_id.clone();
+                new_task_id.instance = i;
+                expanded_tasks.insert(new_task_id, new_task);
             }
         }
     }
@@ -162,7 +166,7 @@ async fn start_local_executor(
     max_parallel: usize,
     mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>,
 ) {
-    let mut task_channels = HashMap::<(RunID, TaskID), oneshot::Sender<()>>::new();
+    let mut task_channels = HashMap::<TaskID, oneshot::Sender<()>>::new();
 
     let mut running = FuturesUnordered::new();
 
@@ -186,41 +190,31 @@ async fn start_local_executor(
                 });
             }
             ExecuteTask {
-                run_id,
                 task_id,
                 task,
                 response,
                 tracker,
             } => {
                 let (tx, rx) = oneshot::channel();
-                task_channels.insert((run_id, task_id), tx);
+                task_channels.insert(task_id.clone(), tx);
                 if running.len() == max_parallel {
                     running.next().await;
                 }
                 tracker
                     .send(TrackerMessage::UpdateTaskState {
-                        run_id,
-                        task_id,
+                        task_id: task_id.clone(),
                         state: State::Running,
                     })
                     .unwrap_or(());
                 running.push(tokio::spawn(async move {
                     let attempt = run_task(task, rx).await;
                     response
-                        .send(RunnerMessage::ExecutionReport {
-                            run_id,
-                            task_id,
-                            attempt,
-                        })
+                        .send(RunnerMessage::ExecutionReport { task_id, attempt })
                         .unwrap();
                 }));
             }
-            StopTask {
-                run_id,
-                task_id,
-                response,
-            } => {
-                if let Some(tx) = task_channels.remove(&(run_id, task_id)) {
+            StopTask { task_id, response } => {
+                if let Some(tx) = task_channels.remove(&task_id) {
                     tx.send(()).unwrap_or(());
                 }
                 response.send(()).unwrap_or(());
@@ -248,13 +242,18 @@ mod tests {
         let task: Task = serde_json::from_str(
             r#"
             {
-                "class": "simple_task",
                 "details": {
                     "command": [ "/bin/echo", "hello", "world" ]
                 }
             }"#,
         )
         .unwrap();
+
+        let task_id = TaskID {
+            run_id: 0,
+            name: "task_a".to_owned(),
+            instance: 0,
+        };
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);
@@ -265,8 +264,7 @@ mod tests {
         // Submit the task
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
         tx.send(ExecutorMessage::ExecuteTask {
-            run_id: 0,
-            task_id: 0,
+            task_id: task_id.clone(),
             task: task,
             response: run_tx,
             tracker: log_tx,
@@ -279,14 +277,12 @@ mod tests {
             .expect("Unable to receive data from result")
         {
             RunnerMessage::ExecutionReport {
-                run_id,
-                task_id,
+                task_id: rtid,
                 attempt,
             } => {
                 assert!(attempt.succeeded);
                 assert_eq!(attempt.output, "hello world\n");
-                assert_eq!(run_id, 0);
-                assert_eq!(task_id, 0);
+                assert_eq!(task_id, rtid);
             }
             _ => {
                 panic!("Unexpected message")
@@ -299,13 +295,18 @@ mod tests {
         let task: Task = serde_json::from_str(
             r#"
             {
-                "class": "simple_task",
                 "details": {
                     "command": [ "/bin/sleep", "60" ]
                 }
             }"#,
         )
         .unwrap();
+
+        let task_id = TaskID {
+            run_id: 0,
+            name: "task_a".to_owned(),
+            instance: 0,
+        };
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);
@@ -316,9 +317,8 @@ mod tests {
         // Submit the task
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
         tx.send(ExecutorMessage::ExecuteTask {
-            run_id: 0,
-            task_id: 0,
-            task: task,
+            task_id: task_id.clone(),
+            task,
             response: run_tx,
             tracker: log_tx,
         })
@@ -326,8 +326,7 @@ mod tests {
 
         let (response, cancel_rx) = oneshot::channel();
         tx.send(ExecutorMessage::StopTask {
-            run_id: 0,
-            task_id: 0,
+            task_id: task_id.clone(),
             response,
         })
         .expect("Unable to stop task");
@@ -339,14 +338,12 @@ mod tests {
             .expect("Unable to receive data from result")
         {
             RunnerMessage::ExecutionReport {
-                run_id,
-                task_id,
+                task_id: rtid,
                 attempt,
             } => {
                 assert!(attempt.killed);
                 assert!(attempt.stop_time - attempt.start_time < chrono::Duration::seconds(5));
-                assert_eq!(run_id, 0);
-                assert_eq!(task_id, 0);
+                assert_eq!(task_id, rtid);
             }
             _ => {
                 panic!("Unexpected message")
@@ -359,13 +356,18 @@ mod tests {
         let task: Task = serde_json::from_str(
             r#"
             {
-                "class": "simple_task",
                 "details": {
                     "command": [ "/bin/sleep", "2" ]
                 }
             }"#,
         )
         .unwrap();
+
+        let task_id = TaskID {
+            run_id: 0,
+            name: "task_a".to_owned(),
+            instance: 0,
+        };
 
         let max_parallel = 5;
 
@@ -378,10 +380,11 @@ mod tests {
         let mut chans = Vec::new();
         for i in 0..10 {
             // Submit the task
+            let mut ntid = task_id.clone();
+            ntid.instance = i;
             let (run_tx, run_rx) = mpsc::unbounded_channel();
             tx.send(ExecutorMessage::ExecuteTask {
-                run_id: 0,
-                task_id: i,
+                task_id: ntid,
                 task: task.clone(),
                 response: run_tx,
                 tracker: log_tx.clone(),
@@ -428,13 +431,18 @@ mod tests {
         let task: Task = serde_json::from_str(
             r#"
             {
-                "class": "simple_task",
                 "details": {
                     "command": [ "/bin/dd", "if=/dev/urandom", "count=10", "bs=1024k" ]
                 }
             }"#,
         )
         .unwrap();
+
+        let task_id = TaskID {
+            run_id: 0,
+            name: "task_a".to_owned(),
+            instance: 0,
+        };
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);
@@ -446,8 +454,7 @@ mod tests {
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
         exe_tx
             .send(ExecutorMessage::ExecuteTask {
-                run_id: 0,
-                task_id: 0,
+                task_id: task_id.clone(),
                 task: task.clone(),
                 response: run_tx,
                 tracker: log_tx,
@@ -457,14 +464,12 @@ mod tests {
         let report = run_rx.recv().await.expect("Unable to recv");
         match report {
             RunnerMessage::ExecutionReport {
-                run_id,
-                task_id,
+                task_id: rtid,
                 attempt,
             } => {
                 assert!(attempt.succeeded);
                 assert!(attempt.output.len() >= 1024 * 1024 * 10);
-                assert_eq!(run_id, 0);
-                assert_eq!(task_id, 0);
+                assert_eq!(task_id, rtid);
             }
             _ => {
                 panic!("Unexpected message")

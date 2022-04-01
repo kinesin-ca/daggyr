@@ -210,7 +210,6 @@ async fn start_ssh_executor(
                 });
             }
             ExecuteTask {
-                run_id,
                 task_id,
                 task,
                 response,
@@ -222,11 +221,7 @@ async fn start_ssh_executor(
                         attempt.succeeded = false;
                         attempt.executor.extend(e);
                         response
-                            .send(RunnerMessage::ExecutionReport {
-                                run_id,
-                                task_id,
-                                attempt,
-                            })
+                            .send(RunnerMessage::ExecutionReport { task_id, attempt })
                             .expect("Unable to send response");
                     }
                     Ok(()) => {
@@ -253,7 +248,6 @@ async fn start_ssh_executor(
                         running.push(tokio::spawn(async move {
                             let (rtx, mut rrx) = mpsc::unbounded_channel();
                             ltx.send(ExecuteTask {
-                                run_id,
                                 task_id,
                                 task: ssh_task,
                                 response: rtx,

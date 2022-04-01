@@ -13,11 +13,9 @@ pub enum TrackerMessage {
     // Updates
     AddTasks {
         run_id: RunID,
-        tasks: Vec<Task>,
-        offset: usize,
+        tasks: HashMap<TaskID, Task>,
     },
     UpdateTask {
-        run_id: RunID,
         task_id: TaskID,
         task: Task,
     },
@@ -26,12 +24,10 @@ pub enum TrackerMessage {
         state: State,
     },
     UpdateTaskState {
-        run_id: RunID,
         task_id: TaskID,
         state: State,
     },
     LogTaskAttempt {
-        run_id: RunID,
         task_id: TaskID,
         attempt: TaskAttempt,
     },
@@ -66,10 +62,9 @@ pub enum TrackerMessage {
     },
     GetTasks {
         run_id: RunID,
-        response: oneshot::Sender<Result<Vec<TaskRecord>>>,
+        response: oneshot::Sender<Result<HashMap<TaskID, TaskRecord>>>,
     },
     GetTask {
-        run_id: RunID,
         task_id: TaskID,
         response: oneshot::Sender<Result<TaskRecord>>,
     },
@@ -81,7 +76,7 @@ pub enum TrackerMessage {
 pub enum RunnerMessage {
     Start {
         tags: RunTags,
-        tasks: Vec<Task>,
+        tasks: HashMap<TaskID, Task>,
         parameters: Parameters,
         tracker: mpsc::UnboundedSender<TrackerMessage>,
         executor: mpsc::UnboundedSender<ExecutorMessage>,
@@ -94,7 +89,6 @@ pub enum RunnerMessage {
         response: oneshot::Sender<Result<()>>,
     },
     ExecutionReport {
-        run_id: RunID,
         task_id: TaskID,
         attempt: TaskAttempt,
     },
@@ -112,19 +106,17 @@ pub enum ExecutorMessage {
         response: oneshot::Sender<Result<(), Vec<String>>>,
     },
     ExpandTasks {
-        tasks: Vec<Task>,
+        tasks: HashMap<TaskID, Task>,
         parameters: Parameters,
-        response: oneshot::Sender<Result<Vec<Task>>>,
+        response: oneshot::Sender<Result<HashMap<TaskID, Task>>>,
     },
     ExecuteTask {
-        run_id: RunID,
         task_id: TaskID,
         task: Task,
         response: mpsc::UnboundedSender<RunnerMessage>,
         tracker: mpsc::UnboundedSender<TrackerMessage>,
     },
     StopTask {
-        run_id: RunID,
         task_id: TaskID,
         response: oneshot::Sender<()>,
     },
@@ -134,7 +126,6 @@ pub enum ExecutorMessage {
 /// Message used to report on the completion of a task
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AttemptReport {
-    pub run_id: RunID,
     pub task_id: TaskID,
     pub attempt: TaskAttempt,
 }

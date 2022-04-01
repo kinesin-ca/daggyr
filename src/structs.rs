@@ -2,12 +2,18 @@ use super::Result;
 pub use chrono::{DateTime, Utc};
 pub use serde::{Deserialize, Serialize};
 pub use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
 pub type RunID = usize;
-pub type TaskID = usize;
-// pub type RunTags = HashMap<String, String>;
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, Hash, PartialEq, Eq)]
+pub struct TaskID {
+    pub run_id: RunID,
+    pub name: String,
+    pub instance: usize,
+}
+
 pub type Parameters = HashMap<String, Vec<String>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -108,11 +114,6 @@ pub enum State {
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Task {
-    pub class: String,
-
-    #[serde(default)]
-    pub instance: usize,
-
     #[serde(default)]
     pub is_generator: bool,
 
@@ -134,8 +135,6 @@ pub struct Task {
 impl Task {
     pub fn new() -> Self {
         Task {
-            class: "".to_owned(),
-            instance: 0,
             is_generator: false,
             max_retries: 0,
             retries: 0,
@@ -146,18 +145,10 @@ impl Task {
     }
 }
 
-impl Hash for Task {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.class.hash(state);
-        self.instance.hash(state);
-    }
-}
-
 #[test]
 fn test_task_deserialization() {
     let data = r#"
     {
-        "class": "simple_task",
         "details": {
             "cmd": "Some parameter here",
             "env": {
@@ -168,8 +159,6 @@ fn test_task_deserialization() {
 
     // Parse the string of data into serde_json::Value.
     let task: Task = serde_json::from_str(data).unwrap();
-    assert_eq!(task.class, "simple_task");
-    assert_eq!(task.instance, 0);
     assert_eq!(task.is_generator, false);
     assert_eq!(task.max_retries, 0);
     assert_eq!(task.retries, 0);
@@ -244,8 +233,6 @@ impl StateChange {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TaskSummary {
-    pub class: String,
-    pub instance: usize,
     pub task_id: TaskID,
     pub state: State,
 }
@@ -271,7 +258,7 @@ impl TaskRecord {
 pub struct RunRecord {
     pub tags: RunTags,
     pub parameters: Parameters,
-    pub tasks: Vec<TaskRecord>,
+    pub tasks: HashMap<TaskID, TaskRecord>,
     pub state_changes: Vec<StateChange>,
 }
 
@@ -280,7 +267,7 @@ impl RunRecord {
         RunRecord {
             tags,
             parameters,
-            tasks: Vec::new(),
+            tasks: HashMap::new(),
             state_changes: vec![StateChange::new(State::Queued)],
         }
     }

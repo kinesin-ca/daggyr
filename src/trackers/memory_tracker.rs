@@ -3,14 +3,16 @@ use crate::structs::*;
 use crate::Result;
 use tokio::sync::mpsc;
 
-fn range_checker(runs: &Vec<RunRecord>, run_id: RunID, task_id: Option<TaskID>) -> Result<()> {
-    match (run_id, task_id) {
-        (run_id, _) if run_id >= runs.len() => Err(anyhow!("No run with ID {} exists", run_id)),
-        (run_id, Some(tid)) if tid >= runs[run_id].tasks.len() => {
-            Err(anyhow!("Run ID {} has no task with ID {}", run_id, tid))
-        }
-        _ => Ok(()),
+fn range_checker(runs: &Vec<RunRecord>, task_id: TaskID) -> Result<()> {
+    if task_id.run_id >= runs.len() {
+        return Err(anyhow!("No run with ID {} exists", task_id.run_id));
     }
+
+    if !runs[task_id.run_id].tasks.contains_key(&task_id) {
+        return Err(anyhow!("No task with ID {:?}", task_id));
+    }
+
+    Ok(())
 }
 
 pub fn start(msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
@@ -35,52 +37,46 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 runs.push(RunRecord::new(tags, parameters));
                 response.send(Ok(new_id)).unwrap_or(());
             }
-            AddTasks {
-                run_id,
-                tasks,
-                offset,
-            } => {
-                if range_checker(&runs, run_id, None).is_ok() {
-                    let new_tasks: Vec<TaskRecord> =
-                        tasks.iter().map(|x| TaskRecord::new(x.clone())).collect();
-                    runs[run_id].tasks.extend(new_tasks);
-                    for task in runs[run_id].tasks[offset..].iter_mut() {
-                        task.state_changes.push(StateChange::new(State::Queued));
+            AddTasks { run_id, tasks } => {
+                if run_id < runs.len() {
+                    let run = &mut runs[run_id];
+                    for (key, task) in tasks.iter() {
+                        let mut task_record = TaskRecord::new(task.clone());
+                        task_record
+                            .state_changes
+                            .push(StateChange::new(State::Queued));
+                        run.tasks.insert(key.clone(), task_record);
                     }
                 }
             }
-            UpdateTask {
-                run_id,
-                task_id,
-                task,
-            } => {
-                if range_checker(&runs, run_id, Some(task_id)).is_ok() {
-                    runs[run_id].tasks[task_id].task = task;
+            UpdateTask { task_id, task } => {
+                if range_checker(&runs, task_id.clone()).is_ok() {
+                    runs[task_id.run_id].tasks.get_mut(&task_id).unwrap().task = task;
                 };
             }
             UpdateState { run_id, state } => {
-                if range_checker(&runs, run_id, None).is_ok() {
+                if run_id < runs.len() {
                     runs[run_id].state_changes.push(StateChange::new(state));
                 };
             }
-            UpdateTaskState {
-                run_id,
-                task_id,
-                state,
-            } => {
-                if range_checker(&runs, run_id, Some(task_id)).is_ok() {
-                    runs[run_id].tasks[task_id]
+            UpdateTaskState { task_id, state } => {
+                if range_checker(&runs, task_id.clone()).is_ok() {
+                    runs[task_id.run_id]
+                        .tasks
+                        .get_mut(&task_id)
+                        .unwrap()
                         .state_changes
                         .push(StateChange::new(state));
                 };
             }
-            LogTaskAttempt {
-                run_id,
-                task_id,
-                attempt,
-            } => {
-                if range_checker(&runs, run_id, Some(task_id)).is_ok() {
-                    runs[run_id].tasks[task_id].attempts.push(attempt);
+            LogTaskAttempt { task_id, attempt } => {
+                if range_checker(&runs, task_id.clone()).is_ok() {
+                    runs[task_id.run_id]
+                        .tasks
+                        .get_mut(&task_id)
+                        .unwrap()
+                        .attempts
+                        .push(attempt);
                 };
             }
             GetRuns {
@@ -115,7 +111,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                     let end_task_time = run
                         .tasks
                         .iter()
-                        .map(|task| {
+                        .map(|(_, task)| {
                             task.state_changes
                                 .last()
                                 .unwrap_or(&default_state)
@@ -140,7 +136,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                     record.start_time = run_start_time;
                     record.last_update_time = end_task_time;
 
-                    for task_record in run.tasks.iter() {
+                    for (_, task_record) in run.tasks.iter() {
                         let task_state = task_record
                             .state_changes
                             .last()
@@ -157,68 +153,65 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response.send(records).unwrap_or(());
             }
             GetRun { run_id, response } => {
-                let result = match range_checker(&runs, run_id, None) {
-                    Ok(()) => Ok(runs[run_id].clone()),
-                    Err(e) => Err(e),
+                let result = if run_id < runs.len() {
+                    Ok(runs[run_id].clone())
+                } else {
+                    Err(anyhow!("No such run"))
                 };
                 response.send(result).unwrap_or(());
             }
             GetState { run_id, response } => {
                 let default_state = StateChange::new(State::Queued);
-                let result = match range_checker(&runs, run_id, None) {
-                    Ok(()) => Ok(runs[run_id]
+                let result = if run_id < runs.len() {
+                    Ok(runs[run_id]
                         .state_changes
                         .last()
                         .unwrap_or(&default_state)
-                        .clone()),
-                    Err(e) => Err(e),
+                        .clone())
+                } else {
+                    Err(anyhow!("No such run"))
                 };
                 response.send(result).unwrap_or(());
             }
             GetStateUpdates { run_id, response } => {
-                let result = match range_checker(&runs, run_id, None) {
-                    Ok(()) => Ok(runs[run_id].state_changes.clone()),
-                    Err(e) => Err(e),
+                let result = if run_id < runs.len() {
+                    Ok(runs[run_id].state_changes.clone())
+                } else {
+                    Err(anyhow!("No such run"))
                 };
                 response.send(result).unwrap_or(());
             }
             GetTaskSummary { run_id, response } => {
                 let default_state = StateChange::new(State::Queued);
-                let result = match range_checker(&runs, run_id, None) {
-                    Ok(()) => {
-                        let mut tasks = Vec::new();
-                        for (tid, task_rec) in runs[run_id].tasks.iter().enumerate() {
-                            tasks.push(TaskSummary {
-                                class: task_rec.task.class.clone(),
-                                instance: task_rec.task.instance,
-                                task_id: tid,
-                                state: task_rec
-                                    .state_changes
-                                    .last()
-                                    .unwrap_or(&default_state)
-                                    .state,
-                            });
-                        }
-                        Ok(tasks)
+                let result = if run_id < runs.len() {
+                    let mut tasks = Vec::new();
+                    for (tid, task_rec) in runs[run_id].tasks.iter() {
+                        tasks.push(TaskSummary {
+                            task_id: tid.clone(),
+                            state: task_rec
+                                .state_changes
+                                .last()
+                                .unwrap_or(&default_state)
+                                .state,
+                        });
                     }
-                    Err(e) => Err(e),
+                    Ok(tasks)
+                } else {
+                    Err(anyhow!("No such run"))
                 };
                 response.send(result).unwrap_or(());
             }
             GetTasks { run_id, response } => {
-                let result = match range_checker(&runs, run_id, None) {
-                    Ok(()) => Ok(runs[run_id].tasks.clone()),
-                    Err(e) => Err(e),
+                let result = if run_id < runs.len() {
+                    Ok(runs[run_id].tasks.clone())
+                } else {
+                    Err(anyhow!("No such run"))
                 };
                 response.send(result).unwrap_or(());
             }
-            GetTask {
-                run_id,
-                task_id,
-                response,
-            } => {
-                let result = match range_checker(&runs, run_id, Some(task_id)) {
-                    Ok(()) => Ok(runs[run_id].tasks[task_id].clone()),
+            GetTask { task_id, response } => {
+                let result = match range_checker(&runs, task_id.clone()) {
+                    Ok(()) => Ok(runs[task_id.run_id].tasks.get(&task_id).unwrap().clone()),
                     Err(e) => Err(e),
                 };
                 response.send(result).unwrap_or(());

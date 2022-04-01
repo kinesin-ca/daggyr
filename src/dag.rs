@@ -1,18 +1,22 @@
 use crate::structs::State;
 use crate::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
+use std::hash::Hash;
 
 #[derive(Clone, Debug)]
-pub struct Vertex {
+pub struct Vertex<T> {
+    id: T,
     children: HashSet<usize>,
     parents: HashSet<usize>,
     pub state: State,
     parents_outstanding: usize,
 }
 
-impl Vertex {
-    fn new() -> Self {
+impl<T> Vertex<T> {
+    fn new(id: T) -> Self {
         Vertex {
+            id,
             children: HashSet::new(),
             parents: HashSet::new(),
             state: State::Queued,
@@ -22,27 +26,41 @@ impl Vertex {
 }
 
 #[derive(Debug)]
-pub struct DAG {
-    pub vertices: Vec<Vertex>,
+pub struct DAG<T: Hash + PartialEq + Eq + Clone + Debug> {
+    pub vertices: Vec<Vertex<T>>,
+    keymap: HashMap<T, usize>,
     ready: HashSet<usize>,
     visiting: HashSet<usize>,
 }
 
-impl DAG {
+impl<T> DAG<T>
+where
+    T: Hash + PartialEq + Eq + Clone + Debug,
+{
     pub fn new() -> Self {
         DAG {
-            vertices: vec![],
+            vertices: Vec::new(),
+            keymap: HashMap::new(),
             ready: HashSet::new(),
             visiting: HashSet::new(),
         }
     }
 
-    pub fn add_vertices(&mut self, n: usize) {
-        let s = self.vertices.len();
-        self.vertices.resize(s + n, Vertex::new());
-        for i in s..n {
-            self.ready.insert(i);
+    pub fn add_vertex(&mut self, key: T) -> Result<()> {
+        if self.keymap.contains_key(&key) {
+            Err(anyhow!("DAG already contains a vertex with key {:?}", key))
+        } else {
+            self.keymap.insert(key.clone(), self.vertices.len());
+            self.vertices.push(Vertex::new(key));
+            Ok(())
         }
+    }
+
+    pub fn add_vertices(&mut self, keys: &Vec<T>) -> Result<()> {
+        for key in keys.iter() {
+            self.add_vertex(key.clone())?
+        }
+        Ok(())
     }
 
     pub fn reset(&mut self) {
@@ -59,8 +77,9 @@ impl DAG {
         self.vertices.len()
     }
 
-    pub fn set_vertex_state(&mut self, id: usize, state: State) -> Result<()> {
-        let cur_state = self.vertices[id].state;
+    pub fn set_vertex_state(&mut self, key: T, state: State) -> Result<()> {
+        let idx = *self.keymap.get(&key).ok_or(anyhow!("No such key"))?;
+        let cur_state = self.vertices[idx].state;
 
         if cur_state == state {
             return Ok(());
@@ -68,17 +87,17 @@ impl DAG {
 
         match (cur_state, state) {
             (_, State::Completed) => {
-                self.ready.remove(&id);
-                self.visiting.remove(&id);
-                self.complete_visit(id, false);
+                self.ready.remove(&idx);
+                self.visiting.remove(&idx);
+                self.complete_visit(&key, false)?;
             }
             (State::Errored, State::Queued) | (State::Killed, State::Queued) => {
-                self.ready.insert(id);
+                self.ready.insert(idx);
             }
             (_, State::Errored) | (_, State::Killed) => {
-                self.ready.remove(&id);
-                self.visiting.remove(&id);
-                self.complete_visit(id, true);
+                self.ready.remove(&idx);
+                self.visiting.remove(&idx);
+                self.complete_visit(&key, true)?;
             }
             (_, _) => {
                 return Err(anyhow!(
@@ -88,14 +107,16 @@ impl DAG {
                 ));
             }
         }
-        self.vertices[id].state = state;
+        self.vertices[idx].state = state;
         Ok(())
     }
 
-    pub fn add_edge(&mut self, src: usize, dst: usize) -> Result<()> {
-        if self.has_path(dst, src) {
+    pub fn add_edge(&mut self, src_key: &T, dst_key: &T) -> Result<()> {
+        if self.has_path(dst_key, src_key)? {
             return Err(anyhow!("Adding edge would result in a loop"));
         }
+        let src = *self.keymap.get(src_key).unwrap();
+        let dst = *self.keymap.get(dst_key).unwrap();
         self.vertices[src].children.insert(dst);
         self.vertices[dst].parents.insert(src);
         match self.vertices[src].state {
@@ -112,9 +133,11 @@ impl DAG {
         return Ok(());
     }
 
-    fn has_path(&self, src: usize, dst: usize) -> bool {
+    fn has_path(&self, src_key: &T, dst_key: &T) -> Result<bool> {
+        let src = *self.keymap.get(src_key).ok_or(anyhow!("No such key"))?;
+        let dst = *self.keymap.get(dst_key).ok_or(anyhow!("No such key"))?;
         let mut seen = HashSet::<usize>::new();
-        return self._has_path(src, dst, &mut seen);
+        return Ok(self._has_path(src, dst, &mut seen));
     }
 
     fn _has_path(&self, src: usize, dst: usize, seen: &mut HashSet<usize>) -> bool {
@@ -136,30 +159,31 @@ impl DAG {
         return false;
     }
 
-    pub fn visit_next(&mut self) -> Option<usize> {
+    pub fn visit_next(&mut self) -> Option<T> {
         if self.ready.is_empty() {
             None
         } else {
-            let id = self.ready.iter().next().unwrap().clone();
-            self.vertices[id].state = State::Running;
-            self.ready.take(&id);
-            self.visiting.insert(id);
-            Some(id)
+            let idx = self.ready.iter().next().unwrap().clone();
+            self.vertices[idx].state = State::Running;
+            self.ready.take(&idx);
+            self.visiting.insert(idx);
+            Some(self.vertices[idx].id.clone())
         }
     }
 
-    pub fn complete_visit(&mut self, id: usize, errored: bool) {
-        self.visiting.take(&id);
-        match self.vertices[id].state {
-            State::Completed => return,
+    pub fn complete_visit(&mut self, key: &T, errored: bool) -> Result<()> {
+        let idx = *self.keymap.get(key).ok_or(anyhow!("No such key"))?;
+        self.visiting.take(&idx);
+        match self.vertices[idx].state {
+            State::Completed => return Ok(()),
             _ => {}
         }
 
         if errored {
-            self.vertices[id].state = State::Errored;
+            self.vertices[idx].state = State::Errored;
         } else {
-            self.vertices[id].state = State::Completed;
-            let children = self.vertices[id].children.clone();
+            self.vertices[idx].state = State::Completed;
+            let children = self.vertices[idx].children.clone();
             for child in children.iter() {
                 self.vertices[*child].parents_outstanding -= 1;
                 if self.vertices[*child].parents_outstanding == 0 {
@@ -167,6 +191,7 @@ impl DAG {
                 }
             }
         }
+        Ok(())
     }
 
     /// Is there any progress still to be had
@@ -193,28 +218,35 @@ mod test {
 
     #[test]
     fn dag_construction() {
-        let mut dag = DAG::new();
+        let mut dag = DAG::<usize>::new();
 
-        dag.add_vertices(3);
+        dag.add_vertices(&vec![0, 1, 2])
+            .expect("Unable to add vertices");
         assert_eq!(dag.len(), 3);
 
-        dag.add_vertices(7);
+        dag.add_vertices(&vec![3, 4, 5, 6, 7, 8, 9])
+            .expect("Unable to add vertices");
         assert_eq!(dag.len(), 10);
+
+        // Unable to add an existing vertex
+        assert!(dag.add_vertices(&vec![3]).is_err());
     }
 
     #[test]
     fn dag_cycle_detection() {
-        let mut dag = DAG::new();
-        dag.add_vertices(3);
-        dag.add_edge(0, 1).unwrap();
-        assert!(dag.add_edge(1, 2).is_ok());
-        assert!(dag.add_edge(2, 0).is_err());
+        let mut dag = DAG::<usize>::new();
+        dag.add_vertices(&vec![0, 1, 2])
+            .expect("Unable to add vertices");
+        dag.add_edge(&0, &1).unwrap();
+        assert!(dag.add_edge(&1, &2).is_ok());
+        assert!(dag.add_edge(&2, &0).is_err());
     }
 
     #[test]
     fn dag_traversal_order() {
         let mut dag = DAG::new();
-        dag.add_vertices(10);
+        dag.add_vertices(&vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .unwrap();
 
         /*
            0 ---------------------\
@@ -236,7 +268,7 @@ mod test {
         ];
 
         for (src, dst) in edges.iter() {
-            dag.add_edge(*src, *dst).unwrap();
+            dag.add_edge(src, dst).unwrap();
         }
         dag.reset();
 
@@ -246,7 +278,8 @@ mod test {
         loop {
             match dag.visit_next() {
                 Some(id) => {
-                    dag.complete_visit(id, false);
+                    dag.complete_visit(&id, false)
+                        .expect("Unable to complete visit");
                     assert_eq!(visit_order[id], 0);
                     visit_order[id] = i;
                 }
@@ -266,7 +299,8 @@ mod test {
     #[test]
     fn dag_additions_during_traversal() {
         let mut dag = DAG::new();
-        dag.add_vertices(10);
+        dag.add_vertices(&vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .unwrap();
 
         /*
            0 ---------------------\
@@ -288,13 +322,14 @@ mod test {
         ];
 
         for (src, dst) in edges.iter() {
-            dag.add_edge(*src, *dst).unwrap();
+            dag.add_edge(src, dst).unwrap();
         }
         dag.reset();
 
         // At the visit of item 5, we'll add in 3 new vertices with these
         // extra edges:
-        let n_extra_vertices: usize = 3;
+        let extra_vertices = vec![10, 11, 12];
+        let n_extra_vertices: usize = extra_vertices.len();
         let extra_edges = [
             // Adding on to the end
             (7usize, 10usize),
@@ -312,15 +347,17 @@ mod test {
         let mut i: usize = 0;
         loop {
             if i == 5 {
-                dag.add_vertices(n_extra_vertices);
+                dag.add_vertices(&extra_vertices)
+                    .expect("unable to add vertices");
                 for (src, dst) in extra_edges.iter() {
-                    dag.add_edge(*src, *dst).unwrap();
+                    dag.add_edge(src, dst).unwrap();
                 }
             }
 
             match dag.visit_next() {
                 Some(id) => {
-                    dag.complete_visit(id, false);
+                    dag.complete_visit(&id, false)
+                        .expect("unable to complete visit");
                     assert_eq!(visit_order[id], 0);
                     visit_order[id] = i;
                 }
