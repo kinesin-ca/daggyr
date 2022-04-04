@@ -107,21 +107,28 @@ Here is an example of a full specification:
     "env": "test"
   },
   "parameters": {
-    "{{VAR}}": [ "value1", "value2", ... ]
+    "{{VAR}}": [
+      "value1",
+      "value2",
+      "valueX"
+    ]
   },
-  "tasks": [
-    {
-      "class": "producer",
-      "details": { ... },
+  "tasks": {
+    "producer": {
+      "details": {
+        "some_details": "value"
+      }
     },
-    {
-      "class": "echoer",
-      "details": { ... },
+    "echoer": {
+      "details": {
+        "some_details": "value"
+      },
       "parents": [
-        "echoer"
+        "producer"
       ]
-    },
-  ]
+    }
+  }
+}
 ```
 
 Tasks
@@ -142,7 +149,7 @@ DaggyR relies on back-end executors to actually run tasks.
 Trackers
 --------
 
-Run state is maintained via trackers. Currently daggy supports an
+Run state is maintained via trackers. Currently, daggyr supports an
 in-memory state manager. Future plans include supporting SQL
 [postgres](https://postgresql.org).
 
@@ -155,4 +162,4 @@ Running the Server
 cargo run --bin server
 ```
 
-More detailed configurations and exmaples are in the `examples` directory.
+More detailed configurations and examples are in the `examples` directory.
