@@ -112,7 +112,7 @@ pub struct TaskID {
     pub instance: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Default)]
 pub struct Task {
     #[serde(default)]
     pub is_generator: bool,
@@ -276,7 +276,7 @@ pub struct TaskSummary {
     pub state: State,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct TaskRecord {
     pub task: Task,
     pub attempts: Vec<TaskAttempt>,
