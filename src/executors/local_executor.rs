@@ -197,10 +197,12 @@ async fn start_local_executor(
                 if running.len() == max_parallel {
                     running.next().await;
                 }
+                let (upd, _) = oneshot::channel();
                 tracker
                     .send(TrackerMessage::UpdateTaskState {
                         task_id: task_id.clone(),
                         state: State::Running,
+                        response: upd,
                     })
                     .unwrap_or(());
                 running.push(tokio::spawn(async move {

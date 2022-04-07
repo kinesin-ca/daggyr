@@ -72,12 +72,15 @@ impl Run {
         run.add_tasks(&updated_tasks)?;
 
         // Let the tracker know
+        let (response, rx) = oneshot::channel();
         run.tracker
             .send(TrackerMessage::AddTasks {
                 run_id: run.run_id,
                 tasks: updated_tasks,
+                response,
             })
             .unwrap();
+        rx.await.unwrap()?;
 
         run.update_state(State::Running).await?;
 
@@ -136,11 +139,21 @@ impl Run {
         run.add_tasks(&tasks)?;
 
         // Update the task states
+        let mut responses = Vec::new();
         for (task_id, state) in states {
             run.dag.set_vertex_state(task_id.clone(), state)?;
+            let (response, rx) = oneshot::channel();
             run.tracker
-                .send(TrackerMessage::UpdateTaskState { task_id, state })
+                .send(TrackerMessage::UpdateTaskState {
+                    task_id,
+                    state,
+                    response,
+                })
                 .unwrap();
+            responses.push(rx);
+        }
+        for rx in responses {
+            rx.await??
         }
 
         run.update_state(State::Running).await?;
@@ -148,12 +161,15 @@ impl Run {
     }
 
     async fn update_state(&mut self, state: State) -> Result<()> {
+        let (response, rx) = oneshot::channel();
         self.tracker
             .send(TrackerMessage::UpdateState {
                 run_id: self.run_id,
-                state: state,
+                state,
+                response,
             })
             .unwrap();
+        rx.await??;
         self.state = state;
         Ok(())
     }
@@ -237,12 +253,15 @@ impl Run {
                 State::Errored
             };
 
+            let (response, rx) = oneshot::channel();
             self.tracker
                 .send(TrackerMessage::UpdateState {
                     run_id: self.run_id,
                     state: self.state,
+                    response,
                 })
                 .unwrap_or(());
+            rx.await.unwrap().unwrap_or(());
             return self.state;
         }
 
@@ -305,12 +324,15 @@ impl Run {
         self.add_tasks(&exp_tasks)?;
 
         // Let the tracker know
+        let (response, rx) = oneshot::channel();
         self.tracker
             .send(TrackerMessage::AddTasks {
                 run_id: self.run_id,
                 tasks: exp_tasks,
+                response,
             })
             .unwrap();
+        rx.await??;
         Ok(())
     }
 
@@ -325,20 +347,26 @@ impl Run {
                     })
                     .unwrap();
                 cancel_rx.await.unwrap_or(());
+                let (response, rx) = oneshot::channel();
                 self.tracker
                     .send(TrackerMessage::UpdateTaskState {
                         task_id: vertex.id.clone(),
                         state: State::Killed,
+                        response,
                     })
                     .unwrap();
+                rx.await??;
             }
         }
+        let (response, rx) = oneshot::channel();
         self.tracker
             .send(TrackerMessage::UpdateState {
                 run_id: self.run_id,
                 state: State::Killed,
+                response,
             })
             .unwrap();
+        rx.await??;
         Ok(())
     }
 
@@ -350,22 +378,28 @@ impl Run {
         self.dag
             .set_vertex_state(task_id.clone(), State::Killed)
             .unwrap();
+        let (response, rx) = oneshot::channel();
         self.tracker
             .send(TrackerMessage::UpdateTaskState {
                 task_id: task_id.clone(),
                 state: State::Killed,
+                response,
             })
             .unwrap();
+        rx.await??;
         Ok(())
     }
 
     async fn complete_task(&mut self, task_id: &TaskID, attempt: TaskAttempt) -> Result<()> {
+        let (response, rx) = oneshot::channel();
         self.tracker
             .send(TrackerMessage::LogTaskAttempt {
                 task_id: task_id.clone(),
                 attempt: attempt.clone(),
+                response,
             })
             .unwrap();
+        rx.await??;
 
         let mut new_state = if attempt.succeeded {
             State::Completed
@@ -382,22 +416,28 @@ impl Run {
                 new_state = State::Errored;
                 let mut generator_attempt = TaskAttempt::new();
                 generator_attempt.executor.push(format!("{:?}", e));
+                let (response, rx) = oneshot::channel();
                 self.tracker
                     .send(TrackerMessage::LogTaskAttempt {
                         task_id: task_id.clone(),
                         attempt: generator_attempt,
+                        response,
                     })
                     .unwrap();
+                rx.await??;
             }
         }
 
         // Update the state
+        let (response, rx) = oneshot::channel();
         self.tracker
             .send(TrackerMessage::UpdateTaskState {
                 task_id: task_id.clone(),
                 state: new_state,
+                response,
             })
             .unwrap();
+        rx.await??;
 
         self.dag
             .complete_visit(&task_id, new_state != State::Completed)?;

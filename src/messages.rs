@@ -14,22 +14,27 @@ pub enum TrackerMessage {
     AddTasks {
         run_id: RunID,
         tasks: TaskSet,
+        response: oneshot::Sender<Result<()>>,
     },
     UpdateTask {
         task_id: TaskID,
         task: Task,
+        response: oneshot::Sender<Result<()>>,
     },
     UpdateState {
         run_id: RunID,
         state: State,
+        response: oneshot::Sender<Result<()>>,
     },
     UpdateTaskState {
         task_id: TaskID,
         state: State,
+        response: oneshot::Sender<Result<()>>,
     },
     LogTaskAttempt {
         task_id: TaskID,
         attempt: TaskAttempt,
+        response: oneshot::Sender<Result<()>>,
     },
 
     // Queries

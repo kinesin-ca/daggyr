@@ -7,7 +7,7 @@ use super::*;
 use crate::structs::*;
 use futures::stream::futures_unordered::FuturesUnordered;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use futures::StreamExt;
 
@@ -187,12 +187,15 @@ async fn start_agent_executor(
                         let base_url = targets[tid].base_url.clone();
                         let submit_client = client.clone();
                         running.push(tokio::spawn(async move {
+                            let (tx, rx) = oneshot::channel();
                             tracker
                                 .send(TrackerMessage::UpdateTaskState {
                                     task_id: task_id.clone(),
                                     state: State::Running,
+                                    response: tx,
                                 })
                                 .unwrap_or(());
+                            rx.await??;
 
                             let submit_url = format!(
                                 "{}/run/{}/{}/{}",

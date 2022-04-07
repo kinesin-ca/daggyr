@@ -208,9 +208,17 @@ fn test_task_deserialization() {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TaskAttempt {
     #[serde(default = "chrono::Utc::now")]
+    #[cfg_attr(
+        feature = "mongo",
+        serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")
+    )]
     pub start_time: DateTime<Utc>,
 
     #[serde(default = "chrono::Utc::now")]
+    #[cfg_attr(
+    feature = "mongo",
+    serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")
+    )]
     pub stop_time: DateTime<Utc>,
 
     #[serde(default)]
@@ -257,6 +265,10 @@ impl TaskAttempt {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StateChange {
+    #[cfg_attr(
+        feature = "mongo",
+        serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")
+    )]
     pub datetime: DateTime<Utc>,
     pub state: State,
 }

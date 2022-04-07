@@ -1,6 +1,6 @@
 use super::*;
 use crate::structs::*;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>) {
     while let Some(msg) = exe_msgs.recv().await {
@@ -17,10 +17,12 @@ pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<Executor
                 tracker,
                 ..
             } => {
+                let (upd, _) = oneshot::channel();
                 tracker
                     .send(TrackerMessage::UpdateTaskState {
                         task_id: task_id.clone(),
                         state: State::Running,
+                        response: upd,
                     })
                     .unwrap_or(());
                 let mut attempt = TaskAttempt::new();
