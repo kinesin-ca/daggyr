@@ -17,7 +17,7 @@ pub async fn start_noop_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessage
             }
             GetRuns { response, .. } => {
                 let records = Vec::new();
-                response.send(records).unwrap_or(());
+                response.send(Ok(records)).unwrap_or(());
             }
             GetRun { response, .. } => {
                 response

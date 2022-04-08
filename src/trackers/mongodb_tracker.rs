@@ -18,7 +18,7 @@ pub fn start(url: String, db_name: String, msgs: mpsc::UnboundedReceiver<Tracker
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct MongoTask {
     #[serde(default)]
-    task_id: TaskID,
+    _id: TaskID,
     #[serde(default)]
     record: TaskRecord,
 }
@@ -50,6 +50,29 @@ struct MongoTracker {
     counters: mongodb::Collection<MongoCounter>,
     runs: mongodb::Collection<MongoRun>,
     tasks: mongodb::Collection<MongoTask>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct MongoRunSummary {
+    _id: RunID,
+    state: State,
+    tags: RunTags,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    start_time: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct MongoTaskCount {
+    _id: State,
+    count: usize,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    last_update: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct MongoTaskState {
+    _id: TaskID,
+    state: State,
 }
 
 impl MongoTracker {
@@ -116,7 +139,7 @@ impl MongoTracker {
             .iter()
             .map(|(task_id, task)| {
                 let mut mtask = MongoTask {
-                    task_id: task_id.clone(),
+                    _id: task_id.clone(),
                     record: TaskRecord::new(task.clone()),
                 };
                 mtask
@@ -174,12 +197,132 @@ impl MongoTracker {
     }
     async fn get_runs(
         &self,
-        tags: RunTags,
-        states: HashSet<State>,
-        start_time: DateTime<Utc>,
-        end_time: DateTime<Utc>,
-    ) -> Vec<RunSummary> {
-        Vec::new()
+        tags: Option<RunTags>,
+        states: Option<HashSet<State>>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<Vec<RunSummary>> {
+        let mut runrecords = Vec::new();
+        // Build out the filter
+
+        let mut filter = doc! {};
+        if let Some(filter_tags) = tags {
+            for (k, v) in filter_tags.iter() {
+                let key = format!("tags.{}", k);
+                filter.insert(key, v);
+            }
+        }
+
+        if let Some(filter_states) = states {
+            filter.insert(
+                "last_state.state",
+                doc! {
+                    "$in": bson::to_bson(&filter_states).unwrap()
+                },
+            );
+        }
+
+        if let Some(filter_start) = start_time {
+            filter.insert(
+                "first_state.datetime",
+                doc! {
+                  "$gte": bson::to_bson(&filter_start).unwrap()
+                },
+            );
+        }
+
+        if let Some(filter_end) = end_time {
+            filter.insert(
+                "first_state.datetime",
+                doc! {
+                  "$lt": bson::to_bson(&filter_end).unwrap()
+                },
+            );
+        }
+
+        let runs_pipeline = vec![
+            doc! {
+              "$addFields": {
+                "last_state": { "$last": "$state_changes" },
+                "first_state": { "$first": "$state_changes" }
+              }
+            },
+            doc! {
+              "$match": filter
+            },
+            doc! {
+              "$addFields": {
+                "run_id": "$_id",
+                "state": "$last_state.state",
+                "start_time": "$first_state.datetime",
+              }
+            },
+            doc! {
+              "$project": {
+                "_id": 1i32,
+                "state": 1i32,
+                "tags": 1i32,
+                "start_time": 1i32,
+              }
+            },
+        ];
+
+        let mut cursor = self.runs.aggregate(runs_pipeline, None).await.unwrap();
+
+        while let Some(bson_run) = cursor.try_next().await? {
+            let run: MongoRunSummary = bson::from_document(bson_run)?;
+            let mut tc_cursor = self
+                .tasks
+                .aggregate(
+                    vec![
+                        doc! {
+                            "$match": {
+                                "_id.run_id": bson::to_bson(&run._id).unwrap()
+                            }
+                        },
+                        // Get the last state
+                        doc! {
+                            "$addFields": {
+                                "last_state": {
+                                    "$last": "$record.state_changes"
+                                }
+                            }
+                        },
+                        doc! {
+                            "$group": {
+                                "_id": "$last_state.state",
+                                "count": { "$sum": 1i32 },
+                                "last_update": { "$max": "$last_state.datetime" }
+                            }
+                        },
+                    ],
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let mut task_states = HashMap::new();
+            let mut last_update_time = chrono::MIN_DATETIME;
+            while let Some(bson_tc) = tc_cursor.try_next().await? {
+                // if bson_tc.is_null("_id") { continue; }
+                let tc: MongoTaskCount = bson::from_document(bson_tc)?;
+                if last_update_time < tc.last_update {
+                    last_update_time = tc.last_update;
+                }
+                task_states.insert(tc._id, tc.count);
+            }
+
+            runrecords.push(RunSummary {
+                run_id: run._id,
+                tags: run.tags,
+                state: run.state,
+                start_time: run.start_time,
+                last_update_time,
+                task_states,
+            });
+        }
+
+        Ok(runrecords)
     }
 
     async fn get_run(&self, run_id: RunID) -> Result<RunRecord> {
@@ -192,7 +335,7 @@ impl MongoTracker {
                 .await?;
 
             while let Some(mtask) = cursor.try_next().await? {
-                tasks.insert(mtask.task_id.clone(), mtask.record.clone());
+                tasks.insert(mtask._id.clone(), mtask.record.clone());
             }
             Ok(RunRecord {
                 tags: run.tags,
@@ -229,13 +372,51 @@ impl MongoTracker {
         }
     }
     async fn get_task_summary(&self, run_id: RunID) -> Result<Vec<TaskSummary>> {
-        Ok(Vec::new())
+        let mut task_states = Vec::new();
+
+        let mut tc_cursor = self
+            .tasks
+            .aggregate(
+                vec![
+                    doc! { "$match": { "_id.run_id": bson::to_bson(&run_id).unwrap() } },
+                    doc! { "$addFields": { "state": { "$last": "$record.state_changes.state" } } },
+                    doc! { "$project": { "_id": 1u32, "state": 1u32 } },
+                ],
+                None,
+            )
+            .await?;
+        while let Some(bson_tc) = tc_cursor.try_next().await? {
+            let tc: MongoTaskState = bson::from_document(bson_tc)?;
+            task_states.push(TaskSummary {
+                task_id: tc._id,
+                state: tc.state,
+            });
+        }
+
+        Ok(task_states)
     }
     async fn get_tasks(&self, run_id: RunID) -> Result<HashMap<TaskID, TaskRecord>> {
-        Ok(HashMap::new())
+        let mut tasks = HashMap::new();
+        let mut tc_cursor = self
+            .tasks
+            .find(doc! { "_id.run_id": bson::to_bson(&run_id).unwrap() }, None)
+            .await?;
+
+        while let Some(mtask) = tc_cursor.try_next().await? {
+            tasks.insert(mtask._id, mtask.record);
+        }
+        Ok(tasks)
     }
+
     async fn get_task(&self, task_id: TaskID) -> Result<TaskRecord> {
-        Ok(TaskRecord::new(Task::new()))
+        let result = self
+            .tasks
+            .find_one(doc! { "_id": bson::to_bson(&task_id).unwrap() }, None)
+            .await?;
+        match result {
+            Some(mtask) => Ok(mtask.record),
+            None => Err(anyhow!(format!("No such task: {:?}", task_id))),
+        }
     }
 }
 
@@ -416,14 +597,13 @@ mod tests {
             .await
             .expect("Receive error")
             .expect("Unable to create run id");
-        println!("Run ID is {}", run_id);
 
         // Verify current state
         {
             let (tx, rx) = oneshot::channel();
             trx_tx
                 .send(GetState {
-                    run_id: run_id,
+                    run_id,
                     response: tx,
                 })
                 .unwrap();
@@ -439,12 +619,12 @@ mod tests {
             let (response, rx) = oneshot::channel();
             trx_tx
                 .send(UpdateState {
-                    run_id: run_id,
+                    run_id,
                     state: State::Running,
                     response,
                 })
                 .unwrap();
-            rx.await;
+            rx.await.unwrap().unwrap();
             let (tx, rx) = oneshot::channel();
             trx_tx
                 .send(GetState {
@@ -460,9 +640,8 @@ mod tests {
         }
 
         // Adding some tasks
-        {
-            let tasks_spec: TaskSetSpec = serde_json::from_str(
-                r#"
+        let tasks_spec: TaskSetSpec = serde_json::from_str(
+            r#"
             {
                 "simple_task": {
                     "details": {
@@ -483,20 +662,20 @@ mod tests {
                     }
                 }
             }"#,
-            )
-            .unwrap();
+        )
+        .unwrap();
 
-            let tasks = tasks_spec.to_task_set();
-
+        let tasks = tasks_spec.to_task_set(run_id);
+        {
             let (response, rx) = oneshot::channel();
             trx_tx
                 .send(AddTasks {
-                    run_id: run_id.clone(),
-                    tasks,
+                    run_id,
+                    tasks: tasks.clone(),
                     response,
                 })
                 .unwrap();
-            rx.await;
+            rx.await.unwrap().unwrap();
         }
 
         // Getting entire run
@@ -511,5 +690,65 @@ mod tests {
             let run = rx.await.unwrap().unwrap();
             assert_eq!(State::Running, run.state_changes.last().unwrap().state);
         };
+
+        // Ensure that it shows up in the list of runs
+        {
+            let (tx, rx) = oneshot::channel();
+            trx_tx
+                .send(GetRuns {
+                    tags: None,
+                    states: None,
+                    start_time: None,
+                    end_time: None,
+                    response: tx,
+                })
+                .unwrap();
+            let runs = rx.await.unwrap().unwrap();
+
+            assert!(runs.iter().any(|x| x.run_id == run_id));
+        };
+
+        // Task summaries
+        {
+            let (tx, rx) = oneshot::channel();
+            trx_tx
+                .send(GetTaskSummary {
+                    run_id,
+                    response: tx,
+                })
+                .unwrap();
+            let task_summaries = rx.await.unwrap().unwrap();
+
+            assert!(task_summaries.len() == tasks.len());
+        }
+
+        // Tasks
+        {
+            let (tx, rx) = oneshot::channel();
+            trx_tx
+                .send(GetTasks {
+                    run_id,
+                    response: tx,
+                })
+                .unwrap();
+            let stored_tasks = rx.await.unwrap().unwrap();
+
+            assert!(stored_tasks.len() == tasks.len());
+        }
+
+        // Task
+        {
+            let (task_id, task) = tasks.iter().next().unwrap();
+            let (tx, rx) = oneshot::channel();
+            trx_tx
+                .send(GetTask {
+                    task_id: task_id.clone(),
+                    response: tx,
+                })
+                .unwrap();
+            let stored_task = rx.await.unwrap().unwrap();
+
+            assert!(stored_task.task == *task);
+        }
     }
 }

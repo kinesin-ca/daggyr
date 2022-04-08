@@ -195,7 +195,7 @@ async fn start_agent_executor(
                                     response: tx,
                                 })
                                 .unwrap_or(());
-                            rx.await??;
+                            rx.await.unwrap().expect("Unable to update task state");
 
                             let submit_url = format!(
                                 "{}/run/{}/{}/{}",

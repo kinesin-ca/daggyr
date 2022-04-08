@@ -622,7 +622,7 @@ mod tests {
         )
         .unwrap();
 
-        let tasks = tasks_spec.to_task_set();
+        let tasks = tasks_spec.to_task_set(0);
 
         let parameters = HashMap::new();
 
@@ -677,7 +677,7 @@ mod tests {
         )
         .unwrap();
 
-        let tasks = tasks_spec.to_task_set();
+        let tasks = tasks_spec.to_task_set(0);
 
         let parameters = HashMap::new();
 
@@ -741,7 +741,7 @@ mod tests {
             }
         }"#;
 
-        let mut tasks = tasks_spec.to_task_set();
+        let mut tasks = tasks_spec.to_task_set(0);
         let parameters = HashMap::new();
 
         let task_id = TaskID {
@@ -762,7 +762,7 @@ mod tests {
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
         let new_tasks_spec: TaskSetSpec = serde_json::from_str(new_task).unwrap();
-        let mut new_tasks = new_tasks_spec.to_task_set();
+        let mut new_tasks = new_tasks_spec.to_task_set(0);
         for (task_id, task) in new_tasks.iter_mut() {
             task.children.push("other_task".to_owned());
             task.parents.push("fancy_generator".to_owned());

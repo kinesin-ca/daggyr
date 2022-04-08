@@ -17,9 +17,10 @@ impl RunTags {
         RunTags(HashMap::new())
     }
 
-    pub fn matches(&self, other: &RunTags) -> bool {
-        for (k, v) in other.iter() {
-            match self.get(k) {
+    /// Returns true if
+    pub fn is_subset_of(&self, other: &RunTags) -> bool {
+        for (k, v) in self.iter() {
+            match other.get(k) {
                 Some(val) => {
                     if val != v {
                         return false;
@@ -168,12 +169,12 @@ impl TaskSetSpec {
         TaskSetSpec(HashMap::new())
     }
 
-    pub fn to_task_set(&self) -> TaskSet {
+    pub fn to_task_set(&self, run_id: RunID) -> TaskSet {
         self.iter()
             .map(|(name, task)| {
                 (
                     TaskID {
-                        run_id: 0,
+                        run_id: run_id,
                         name: name.clone(),
                         instance: 0,
                     },
@@ -216,8 +217,8 @@ pub struct TaskAttempt {
 
     #[serde(default = "chrono::Utc::now")]
     #[cfg_attr(
-    feature = "mongo",
-    serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")
+        feature = "mongo",
+        serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")
     )]
     pub stop_time: DateTime<Utc>,
 

@@ -111,17 +111,19 @@ impl MemoryTracker {
 
     fn get_runs(
         &self,
-        tags: RunTags,
-        states: HashSet<State>,
-        start_time: DateTime<Utc>,
-        end_time: DateTime<Utc>,
+        tags: Option<RunTags>,
+        states: Option<HashSet<State>>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
     ) -> Vec<RunSummary> {
         let mut records = Vec::new();
         let default_state = StateChange::new(State::Queued);
 
         for (i, run) in self.runs.iter().enumerate() {
-            if !tags.is_empty() && !run.tags.matches(&tags) {
-                continue;
+            if let Some(filter_tags) = tags.clone() {
+                if !filter_tags.is_subset_of(&run.tags) {
+                    continue;
+                }
             }
 
             let run_state = run
@@ -151,15 +153,22 @@ impl MemoryTracker {
                 .max()
                 .unwrap_or(default_state.datetime.clone());
 
-            if !(states.is_empty() || states.contains(&run_state)) {
-                continue;
+            if let Some(filter_states) = states.clone() {
+                if !(filter_states.contains(&run_state)) {
+                    continue;
+                }
             }
 
-            if run_start_time < start_time {
-                continue;
+            if let Some(filter_start_time) = start_time {
+                if run_start_time < filter_start_time {
+                    continue;
+                }
             }
-            if run_start_time > end_time {
-                continue;
+
+            if let Some(filter_end_time) = end_time {
+                if run_start_time > filter_end_time {
+                    continue;
+                }
             }
 
             let mut record = RunSummary::new(i, run.tags.clone(), run_state);
@@ -319,12 +328,12 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response,
             } => {
                 response
-                    .send(tracker.get_runs(
+                    .send(Ok(tracker.get_runs(
                         tags.clone(),
                         states.clone(),
                         start_time.clone(),
                         end_time.clone(),
-                    ))
+                    )))
                     .unwrap_or(());
             }
             GetRun { run_id, response } => {

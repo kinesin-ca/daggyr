@@ -40,11 +40,11 @@ pub enum TrackerMessage {
     // Queries
     /// Defaults to running states
     GetRuns {
-        tags: RunTags,
-        states: HashSet<State>,
-        start_time: DateTime<Utc>,
-        end_time: DateTime<Utc>,
-        response: oneshot::Sender<Vec<RunSummary>>,
+        tags: Option<RunTags>,
+        states: Option<HashSet<State>>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        response: oneshot::Sender<Result<Vec<RunSummary>>>,
     },
 
     GetRun {
