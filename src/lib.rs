@@ -9,7 +9,7 @@ pub use anyhow::Result;
 pub mod dag;
 pub mod executors;
 pub mod messages;
-// pub mod prelude;
+pub mod prelude;
 pub mod runner;
 pub mod structs;
 pub mod trackers;

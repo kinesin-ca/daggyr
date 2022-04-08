@@ -20,18 +20,17 @@ async fn get_resources(data: web::Data<GlobalConfig>) -> impl Responder {
 }
 
 async fn submit_task(
-    path: web::Path<(RunID, TaskID)>,
+    path: web::Path<TaskID>,
     task: web::Json<Task>,
     data: web::Data<GlobalConfig>,
 ) -> impl Responder {
-    let (run_id, task_id) = path.into_inner();
+    let task_id = path.into_inner();
     let (response, mut rx) = mpsc::unbounded_channel();
 
     let trx = data.tracker.clone();
 
     data.executor
         .send(ExecutorMessage::ExecuteTask {
-            run_id,
             task_id,
             task: task.into_inner(),
             tracker: trx,
@@ -47,19 +46,12 @@ async fn submit_task(
     }
 }
 
-async fn stop_task(
-    path: web::Path<(RunID, TaskID)>,
-    data: web::Data<GlobalConfig>,
-) -> impl Responder {
-    let (run_id, task_id) = path.into_inner();
+async fn stop_task(path: web::Path<TaskID>, data: web::Data<GlobalConfig>) -> impl Responder {
+    let task_id = path.into_inner();
     let (response, rx) = oneshot::channel();
 
     data.executor
-        .send(ExecutorMessage::StopTask {
-            run_id,
-            task_id,
-            response,
-        })
+        .send(ExecutorMessage::StopTask { task_id, response })
         .unwrap();
 
     rx.await.unwrap();
@@ -152,8 +144,8 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::scope("/api/v1")
                     .route("/resources", web::get().to(get_resources))
-                    .route("/run/{run_id}/{task_id}", web::post().to(submit_task))
-                    .route("/run/{run_id}/{task_id}", web::delete().to(stop_task)),
+                    .route("/run/{task_id}", web::post().to(submit_task))
+                    .route("/run/{task_id}", web::delete().to(stop_task)),
             )
     })
     .bind(config.listen_spec())?
