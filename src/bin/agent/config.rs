@@ -40,7 +40,7 @@ impl Default for GlobalConfigSpec {
     fn default() -> Self {
         GlobalConfigSpec {
             ip: String::from("127.0.0.1"),
-            port: 2503,
+            port: default_port(),
             resources: default_resources(),
         }
     }

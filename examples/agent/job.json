@@ -1,10 +1,10 @@
 {
-  "tags": [ "abc" ],
+  "tags": { "user": "myself" },
   "parameters": {
     "{{DATE}}": [ "2022-01-01", "2022-01-02" ]
   },
-  "tasks": [
-    { "class": "a",
+  "tasks": {
+    "a": {
       "details": {
         "command": ["echo", "{{DATE}}"],
         "environment": {
@@ -16,5 +16,5 @@
         }
       }
     }
-  ]
+  }
 }

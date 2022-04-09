@@ -44,7 +44,7 @@ fn max_datetime() -> DateTime<Utc> {
     chrono::MAX_DATETIME
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Debug)]
 struct RunsSelection {
     #[serde(default)]
     tags: RunTags,
@@ -64,6 +64,8 @@ async fn get_runs(
     state: web::Data<AppState>,
 ) -> impl Responder {
     let (response, rx) = oneshot::channel();
+
+    println!("Querying {:?}", criteria);
 
     state
         .config

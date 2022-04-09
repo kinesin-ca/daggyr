@@ -7,7 +7,7 @@
     "default": {
       "executor": "agent",
       "targets": [
-        { "base_url": "http://localhost:2504/api/v1/run", "resources": { "cores": 10 } }
+        { "base_url": "http://localhost:2504/api/v1", "resources": { "cores": 10 } }
       ]
     }
   }

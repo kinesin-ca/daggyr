@@ -198,7 +198,7 @@ async fn start_agent_executor(
                             rx.await.unwrap().expect("Unable to update task state");
 
                             let submit_url = format!(
-                                "{}/run/{}/{}/{}",
+                                "{}/{}/{}/{}",
                                 base_url, task_id.run_id, task_id.name, task_id.instance
                             );
                             // TODO Handle the case where an agent stops responding
