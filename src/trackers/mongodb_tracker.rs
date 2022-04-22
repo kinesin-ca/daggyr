@@ -277,7 +277,7 @@ impl MongoTracker {
                     vec![
                         doc! {
                             "$match": {
-                                "_id.run_id": bson::to_bson(&run._id).unwrap()
+                                "_id": { "$regex":  bson::to_bson(&format!("^{}_", run._id)).unwrap() }
                             }
                         },
                         // Get the last state
@@ -378,7 +378,7 @@ impl MongoTracker {
             .tasks
             .aggregate(
                 vec![
-                    doc! { "$match": { "_id.run_id": bson::to_bson(&run_id).unwrap() } },
+                    doc! { "$match": { "_id": { "$regex":  bson::to_bson(&format!("^{}_", run_id)).unwrap() } } },
                     doc! { "$addFields": { "state": { "$last": "$record.state_changes.state" } } },
                     doc! { "$project": { "_id": 1u32, "state": 1u32 } },
                 ],
@@ -399,7 +399,10 @@ impl MongoTracker {
         let mut tasks = HashMap::new();
         let mut tc_cursor = self
             .tasks
-            .find(doc! { "_id.run_id": bson::to_bson(&run_id).unwrap() }, None)
+            .find(
+                doc! { "_id": { "$regex":  bson::to_bson(&format!("^{}_", run_id)).unwrap() } },
+                None,
+            )
             .await?;
 
         while let Some(mtask) = tc_cursor.try_next().await? {

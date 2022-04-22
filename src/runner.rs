@@ -65,7 +65,7 @@ impl Run {
         // Set the RunID on the tasks
         let mut updated_tasks = TaskSet::new();
         for (mut task_id, task) in exp_tasks {
-            task_id.run_id = run.run_id;
+            task_id.set_run_id(run.run_id);
             updated_tasks.insert(task_id, task);
         }
 
@@ -182,14 +182,14 @@ impl Run {
 
         // Figure out the name maps
         for task_id in tasks.keys() {
-            match self.name_tasks.get_mut(&task_id.name) {
+            match self.name_tasks.get_mut(&task_id.name().to_owned()) {
                 Some(tids) => {
                     tids.insert(task_id.clone());
                 }
                 None => {
                     let mut tids = HashSet::new();
                     tids.insert(task_id.clone());
-                    self.name_tasks.insert(task_id.name.clone(), tids);
+                    self.name_tasks.insert(task_id.name().to_owned(), tids);
                 }
             }
         }
@@ -206,7 +206,7 @@ impl Run {
                     None => {
                         return Err(anyhow!(
                             "Task {} has child {} which does not exist in the DAG",
-                            task_id.name,
+                            task_id.name(),
                             child
                         ));
                     }
@@ -224,7 +224,7 @@ impl Run {
                     None => {
                         return Err(anyhow!(
                             "Task {} has parent {} which does not exist in the DAG",
-                            task_id.name,
+                            task_id.name(),
                             parent
                         ));
                     }
@@ -290,11 +290,7 @@ impl Run {
         match serde_json::from_str::<TaskSetSpec>(&attempt.output) {
             Ok(result) => {
                 for (name, task) in result.iter() {
-                    let new_id = TaskID {
-                        run_id: task_id.run_id,
-                        name: name.clone(),
-                        instance: 0,
-                    };
+                    let new_id = TaskID::new(task_id.run_id(), name, 0);
                     tasks.insert(new_id, task.clone());
                 }
             }
@@ -314,7 +310,7 @@ impl Run {
         let mut exp_tasks = rx.await??;
         let gen_task = self.tasks.get(&task_id).unwrap();
         let children = gen_task.children.clone();
-        let parents = vec![task_id.name.clone()];
+        let parents = vec![task_id.name().to_owned()];
         for (_, task) in exp_tasks.iter_mut() {
             task.children = children.clone();
             task.parents = parents.clone();
@@ -522,10 +518,11 @@ async fn start_dag_runner(
                 }
             }
             ExecutionReport { task_id, attempt } => {
-                if let Some(run) = runs.get_mut(&task_id.run_id) {
+                let run_id = task_id.run_id();
+                if let Some(run) = runs.get_mut(&run_id) {
                     run.complete_task(&task_id, attempt).await.unwrap_or(());
                     if run.run().await != State::Running {
-                        runs.remove(&task_id.run_id);
+                        runs.remove(&run_id);
                     }
                 }
             }
@@ -629,7 +626,7 @@ mod tests {
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
         for (mut task_id, task) in tasks {
-            task_id.run_id = run_id;
+            task_id.set_run_id(run_id);
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {
@@ -684,7 +681,7 @@ mod tests {
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
         for (mut task_id, task) in tasks {
-            task_id.run_id = run_id;
+            task_id.set_run_id(run_id);
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {
@@ -696,7 +693,7 @@ mod tests {
             let task_record = rx.await.unwrap().unwrap();
             assert_eq!(task, task_record.task);
 
-            match task_id.name.as_ref() {
+            match task_id.name() {
                 "simple_task" => {
                     assert_eq!(task_record.state_changes.len(), 3);
                     assert_eq!(
@@ -744,11 +741,7 @@ mod tests {
         let mut tasks = tasks_spec.to_task_set(0);
         let parameters = HashMap::new();
 
-        let task_id = TaskID {
-            run_id: 0,
-            name: "fancy_generator".to_owned(),
-            instance: 0,
-        };
+        let task_id = TaskID::new(0, &"fancy_generator".to_owned(), 0);
 
         let mut gen_task = Task::new();
         gen_task.is_generator = true;
@@ -766,18 +759,14 @@ mod tests {
         for (task_id, task) in new_tasks.iter_mut() {
             task.children.push("other_task".to_owned());
             task.parents.push("fancy_generator".to_owned());
-            let new_id = TaskID {
-                run_id: run_id,
-                name: task_id.name.clone(),
-                instance: 0,
-            };
+            let new_id = TaskID::new(run_id, &task_id.name().to_owned(), 0);
             tasks.insert(new_id, task.clone());
         }
 
         assert_eq!(tasks.len(), 3);
 
         for (mut task_id, task) in tasks {
-            task_id.run_id = run_id;
+            task_id.set_run_id(run_id);
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {

@@ -83,7 +83,7 @@ async fn expand_tasks(tasks: TaskSet, parameters: Parameters) -> Result<TaskSet>
                     .zip(new_env_vals.iter().cloned())
                     .collect();
                 let mut new_task_id = task_id.clone();
-                new_task_id.instance = i;
+                new_task_id.set_instance(i);
                 expanded_tasks.insert(new_task_id, new_task);
             }
         }
@@ -248,11 +248,7 @@ mod tests {
         )
         .unwrap();
 
-        let task_id = TaskID {
-            run_id: 0,
-            name: "task_a".to_owned(),
-            instance: 0,
-        };
+        let task_id = TaskID::new(0, &"task_a".to_owned(), 0);
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);
@@ -301,11 +297,7 @@ mod tests {
         )
         .unwrap();
 
-        let task_id = TaskID {
-            run_id: 0,
-            name: "task_a".to_owned(),
-            instance: 0,
-        };
+        let task_id = TaskID::new(0, &"task_a".to_owned(), 0);
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);
@@ -362,11 +354,7 @@ mod tests {
         )
         .unwrap();
 
-        let task_id = TaskID {
-            run_id: 0,
-            name: "task_a".to_owned(),
-            instance: 0,
-        };
+        let task_id = TaskID::new(0, &"task_a".to_owned(), 0);
 
         let max_parallel = 5;
 
@@ -380,7 +368,7 @@ mod tests {
         for i in 0..10 {
             // Submit the task
             let mut ntid = task_id.clone();
-            ntid.instance = i;
+            ntid.set_instance(i);
             let (run_tx, run_rx) = mpsc::unbounded_channel();
             tx.send(ExecutorMessage::ExecuteTask {
                 task_id: ntid,
@@ -437,11 +425,7 @@ mod tests {
         )
         .unwrap();
 
-        let task_id = TaskID {
-            run_id: 0,
-            name: "task_a".to_owned(),
-            instance: 0,
-        };
+        let task_id = TaskID::new(0, &"task_a".to_owned(), 0);
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);

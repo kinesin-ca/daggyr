@@ -118,7 +118,7 @@ impl GlobalConfig {
 
                 #[cfg(feature = "slurm")]
                 Slurm { base_url } => {
-                    slurm_executor::start(base_url);
+                    slurm_executor::start(base_url.clone(), rx);
                 }
             }
             pools.insert(pool.clone(), tx);

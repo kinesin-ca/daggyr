@@ -4,11 +4,12 @@ use crate::Result;
 use tokio::sync::mpsc;
 
 fn range_checker(runs: &Vec<RunRecord>, task_id: TaskID) -> Result<()> {
-    if task_id.run_id >= runs.len() {
-        return Err(anyhow!("No run with ID {} exists", task_id.run_id));
+    let run_id = task_id.run_id();
+    if run_id >= runs.len() {
+        return Err(anyhow!("No run with ID {} exists", run_id));
     }
 
-    if !runs[task_id.run_id].tasks.contains_key(&task_id) {
+    if !runs[run_id].tasks.contains_key(&task_id) {
         return Err(anyhow!("No task with ID {:?}", task_id));
     }
 
@@ -33,11 +34,12 @@ impl MemoryTracker {
     }
 
     fn range_checker(&self, task_id: &TaskID) -> Result<()> {
-        if task_id.run_id >= self.runs.len() {
-            return Err(anyhow!("No run with ID {} exists", task_id.run_id));
+        let run_id = task_id.run_id();
+        if run_id >= self.runs.len() {
+            return Err(anyhow!("No run with ID {} exists", run_id));
         }
 
-        if !self.runs[task_id.run_id].tasks.contains_key(&task_id) {
+        if !self.runs[run_id].tasks.contains_key(&task_id) {
             return Err(anyhow!("No task with ID {:?}", task_id));
         }
 
@@ -68,7 +70,7 @@ impl MemoryTracker {
 
     fn update_task(&mut self, task_id: TaskID, task: Task) -> Result<()> {
         self.range_checker(&task_id)?;
-        self.runs[task_id.run_id]
+        self.runs[task_id.run_id()]
             .tasks
             .get_mut(&task_id)
             .unwrap()
@@ -89,7 +91,7 @@ impl MemoryTracker {
 
     fn update_task_state(&mut self, task_id: TaskID, state: State) -> Result<()> {
         self.range_checker(&task_id)?;
-        self.runs[task_id.run_id]
+        self.runs[task_id.run_id()]
             .tasks
             .get_mut(&task_id)
             .unwrap()
@@ -100,7 +102,7 @@ impl MemoryTracker {
 
     fn log_task_attempt(&mut self, task_id: TaskID, attempt: TaskAttempt) -> Result<()> {
         self.range_checker(&task_id)?;
-        self.runs[task_id.run_id]
+        self.runs[task_id.run_id()]
             .tasks
             .get_mut(&task_id)
             .unwrap()
@@ -251,7 +253,7 @@ impl MemoryTracker {
 
     fn get_task(&self, task_id: TaskID) -> Result<TaskRecord> {
         self.range_checker(&task_id)?;
-        Ok(self.runs[task_id.run_id]
+        Ok(self.runs[task_id.run_id()]
             .tasks
             .get(&task_id)
             .unwrap()

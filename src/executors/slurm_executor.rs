@@ -128,12 +128,12 @@ struct SlurmJob {
 async fn submit_slurm_job(
     base_url: &String,
     client: &reqwest::Client,
-    task_name: &String,
+    task_id: &TaskID,
     task: &Task,
 ) -> Result<u64> {
     let details = get_task_details(&task).unwrap();
 
-    let job = SlurmSubmitJob::new(task_name.clone(), details.clone());
+    let job = SlurmSubmitJob::new(task_id.to_string(), details.clone());
 
     let result = client
         .post(base_url.clone() + "/job/submit")
@@ -170,27 +170,47 @@ fn slurp_if_exists(filename: String) -> String {
     }
 }
 
-fn expand_task(task: &Task, parameters: &Parameters) -> Result<Vec<Task>> {
-    let mut tasks: Vec<Task> = Vec::new();
-    let template = get_task_details(&task)?;
+fn expand_tasks(tasks: TaskSet, parameters: Parameters) -> Result<TaskSet> {
+    let mut expanded_tasks = HashMap::new();
+    for (task_id, task) in tasks {
+        let template = get_task_details(&task)?;
 
-    let all_vars = parameters
-        .keys()
-        .into_iter()
-        .map(|x| String::from(x.clone()))
-        .collect::<Vec<String>>();
+        let all_vars: Vec<String> = parameters.keys().into_iter().cloned().collect();
 
-    // The expansion set will include both environment
-    let vars = find_applicable_vars(&template.command, &all_vars);
-    let new_cmds = apply_vars(&template.command, &parameters, &vars);
-    for (i, new_cmd) in new_cmds.iter().enumerate() {
-        let mut new_task = task.clone();
-        new_task.details["command"] = serde_json::json!(new_cmd);
-        new_task.instance = i;
-        tasks.push(new_task);
+        // Need to decompose the environment to apply the expansion
+        let env_keys: Vec<String> = template.environment.keys().into_iter().cloned().collect();
+        let env_values: Vec<String> = env_keys
+            .iter()
+            .map(|x| template.environment[x].clone())
+            .collect();
+
+        // The expansion set will include both environment
+        let vars: HashSet<_> = find_applicable_vars(&template.command, &all_vars)
+            .union(&find_applicable_vars(&env_values, &all_vars))
+            .cloned()
+            .collect();
+
+        if vars.is_empty() {
+            expanded_tasks.insert(task_id, task);
+        } else {
+            let new_cmds = apply_vars(&template.command, &parameters, &vars);
+            let new_envs = apply_vars(&env_values, &parameters, &vars);
+            for (i, (new_cmd, new_env_vals)) in new_cmds.iter().zip(new_envs.iter()).enumerate() {
+                let mut new_task = task.clone();
+                new_task.details["command"] = serde_json::json!(new_cmd);
+                new_task.details["environment"] = env_keys
+                    .iter()
+                    .cloned()
+                    .zip(new_env_vals.iter().cloned())
+                    .collect();
+                let mut new_task_id = task_id.clone();
+                new_task_id.set_instance(i);
+                expanded_tasks.insert(new_task_id, new_task);
+            }
+        }
     }
 
-    Ok(tasks)
+    Ok(expanded_tasks)
 }
 
 enum JobEvent {
@@ -200,9 +220,7 @@ enum JobEvent {
 
 async fn watch_job(
     slurm_id: u64,
-    run_id: RunID,
     task_id: TaskID,
-    task_name: String,
     task: Task,
     base_url: String,
     response: mpsc::UnboundedSender<RunnerMessage>,
@@ -254,14 +272,10 @@ async fn watch_job(
                         let mut attempt = TaskAttempt::new();
                         attempt.executor.push(format!(
                                     "Unable to query job status, assuming critical failure. Investigate job id {}, task name {} in slurm for more details"
-                                    , slurm_id, task_name
+                                    , slurm_id, task_id
                                 ));
                         response
-                            .send(RunnerMessage::ExecutionReport {
-                                run_id: run_id,
-                                task_id: task_id,
-                                attempt,
-                            })
+                            .send(RunnerMessage::ExecutionReport { task_id, attempt })
                             .unwrap();
                         return;
                     }
@@ -285,7 +299,6 @@ async fn watch_job(
 
                             response
                                 .send(RunnerMessage::ExecutionReport {
-                                    run_id: run_id,
                                     task_id: task_id,
                                     attempt: TaskAttempt {
                                         succeeded: state == "COMPLETED",
@@ -313,7 +326,6 @@ async fn watch_job(
                             );
                             response
                                 .send(RunnerMessage::ExecutionReport {
-                                    run_id: run_id,
                                     task_id: task_id,
                                     attempt: TaskAttempt {
                                         succeeded: false,
@@ -346,7 +358,7 @@ pub async fn start_slurm_executor(
     base_url: String,
     mut msgs: mpsc::UnboundedReceiver<ExecutorMessage>,
 ) {
-    let mut running_tasks = HashMap::<(RunID, TaskID), oneshot::Sender<JobEvent>>::new();
+    let mut running_tasks = HashMap::<TaskID, oneshot::Sender<JobEvent>>::new();
 
     let client = reqwest::Client::new();
 
@@ -373,55 +385,37 @@ pub async fn start_slurm_executor(
                 parameters,
                 response,
             } => {
-                let mut all_tasks = Vec::new();
-                let mut errors = String::new();
-
-                for task in tasks {
-                    match expand_task(&task, &parameters) {
-                        Ok(mut tasks) => all_tasks.append(&mut tasks),
-                        Err(e) => errors.push_str(&format!("{:?}", e)),
-                    }
-                }
-                if errors.is_empty() {
-                    response.send(Ok(all_tasks)).unwrap_or(());
-                } else {
-                    response.send(Err(anyhow!(errors))).unwrap_or(());
-                }
+                response.send(expand_tasks(tasks, parameters)).unwrap_or(());
             }
             ExecuteTask {
-                run_id,
                 task_id,
                 task,
                 response,
                 tracker,
             } => {
-                let task_name = format!("{}_{}_{}", run_id, task.class, task.instance);
-
                 let url = base_url.clone();
-                match submit_slurm_job(&base_url, &client, &task_name, &task).await {
+                match submit_slurm_job(&base_url, &client, &task_id, &task).await {
                     Ok(slurm_id) => {
                         let (kill_tx, kill_rx) = oneshot::channel();
+                        let tid = task_id.clone();
                         tokio::spawn(async move {
-                            watch_job(
-                                slurm_id, run_id, task_id, task_name, task, url, response, kill_rx,
-                            )
-                            .await
+                            watch_job(slurm_id, tid, task, url, response, kill_rx).await
                         });
+                        let (tx, _) = oneshot::channel();
                         tracker
                             .send(TrackerMessage::UpdateTaskState {
-                                run_id: run_id,
-                                task_id: task_id,
+                                task_id: task_id.clone(),
                                 state: State::Running,
+                                response: tx,
                             })
                             .unwrap_or(());
-                        running_tasks.insert((run_id, task_id), kill_tx);
+                        running_tasks.insert(task_id, kill_tx);
                     }
                     Err(e) => {
                         let mut attempt = TaskAttempt::new();
                         attempt.executor.push(format!("{:?}", e));
                         response
                             .send(RunnerMessage::ExecutionReport {
-                                run_id: run_id,
                                 task_id: task_id,
                                 attempt: attempt,
                             })
@@ -429,13 +423,8 @@ pub async fn start_slurm_executor(
                     }
                 }
             }
-            StopTask {
-                run_id,
-                task_id,
-                response,
-            } => {
-                let taskid = (run_id, task_id);
-                if let Some(channel) = running_tasks.remove(&taskid) {
+            StopTask { task_id, response } => {
+                if let Some(channel) = running_tasks.remove(&task_id) {
                     channel.send(JobEvent::Kill).unwrap_or(());
                 }
                 response.send(()).unwrap_or(());

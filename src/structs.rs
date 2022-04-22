@@ -2,6 +2,7 @@ use super::Result;
 pub use chrono::{DateTime, Utc};
 pub use serde::{Deserialize, Serialize};
 pub use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
@@ -107,10 +108,57 @@ pub enum State {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, Hash, PartialEq, Eq)]
-pub struct TaskID {
-    pub run_id: RunID,
-    pub name: String,
-    pub instance: usize,
+pub struct TaskID(String);
+
+impl TaskID {
+    pub fn new(run_id: RunID, name: &String, instance: usize) -> Self {
+        TaskID(format!("{}_{}_{}", run_id, name, instance))
+    }
+
+    pub fn run_id(&self) -> RunID {
+        let first = self.0.find('_').unwrap();
+        self.0[..first].parse::<RunID>().unwrap()
+    }
+
+    pub fn name(&self) -> &str {
+        let first = self.0.find('_').unwrap() + 1;
+        let last = self.0.rfind('_').unwrap();
+        &self.0[first..last]
+    }
+
+    pub fn instance(&self) -> usize {
+        let last = self.0.rfind('_').unwrap() + 1;
+        self.0[last..].parse::<usize>().unwrap()
+    }
+
+    pub fn set_run_id(&mut self, run_id: RunID) {
+        let first = self.0.find('_').unwrap();
+        self.0 = format!("{}{}", run_id, self.0[first..].to_owned());
+    }
+
+    pub fn set_instance(&mut self, instance: usize) {
+        let last = self.0.rfind('_').unwrap() + 1;
+        self.0 = format!("{}{}", self.0[..last].to_owned(), instance);
+    }
+}
+
+impl Deref for TaskID {
+    type Target = String;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TaskID {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl fmt::Display for TaskID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Default)]
@@ -171,16 +219,7 @@ impl TaskSetSpec {
 
     pub fn to_task_set(&self, run_id: RunID) -> TaskSet {
         self.iter()
-            .map(|(name, task)| {
-                (
-                    TaskID {
-                        run_id: run_id,
-                        name: name.clone(),
-                        instance: 0,
-                    },
-                    task.clone(),
-                )
-            })
+            .map(|(name, task)| (TaskID::new(run_id, name, 0), task.clone()))
             .collect()
     }
 }

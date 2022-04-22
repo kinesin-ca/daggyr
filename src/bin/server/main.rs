@@ -202,8 +202,11 @@ async fn get_run_tasks(path: web::Path<RunID>, state: web::Data<AppState>) -> im
     }
 }
 
-async fn get_run_task(path: web::Path<TaskID>, state: web::Data<AppState>) -> impl Responder {
-    let task_id = path.into_inner();
+async fn get_run_task(
+    path: web::Path<(RunID, TaskID)>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let (_run_id, task_id) = path.into_inner();
     let (response, rx) = oneshot::channel();
 
     state
