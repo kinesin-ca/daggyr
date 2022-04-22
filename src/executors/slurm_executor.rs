@@ -475,12 +475,11 @@ mod tests {
         let base_url = "http://localhost:6820/slurm/v0.0.36".to_owned();
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-        super::start(base_ur, exe_rx);
+        super::start(base_url, exe_rx);
 
         let task_spec = format!(
             r#"
                 {{
-                    "class": "simple_task",
                     "details": {{
                         "command": [ "/usr/bin/echo", "hello", "$MYVAR" ],
                         "user": "{}",
@@ -495,13 +494,13 @@ mod tests {
         );
 
         let task: Task = serde_json::from_str(task_spec.as_str()).unwrap();
+        let task_id = TaskID::new(0, &"fancy_pants".to_owned(), 0);
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (log_tx, _) = mpsc::unbounded_channel();
         exe_tx
             .send(ExecutorMessage::ExecuteTask {
-                run_id: 0usize,
-                task_id: 0,
+                task_id,
                 task: task,
                 response: tx,
                 tracker: log_tx,
@@ -529,12 +528,11 @@ mod tests {
         let base_url = "http://localhost:6820/slurm/v0.0.36".to_owned();
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-        super::start(base_ur, exe_rx);
+        super::start(base_url, exe_rx);
 
         let task_spec = format!(
             r#"
                 {{
-                    "class": "long_task",
                     "details": {{
                         "command": [ "sleep", "1800" ],
                         "user": "{}",
@@ -545,15 +543,14 @@ mod tests {
             user, token
         );
 
-        let run_id: RunID = 0;
         let task: Task = serde_json::from_str(task_spec.as_str()).unwrap();
+        let task_id = TaskID::new(0, &"fancy_pants".to_owned(), 0);
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (log_tx, _) = mpsc::unbounded_channel();
         exe_tx
             .send(ExecutorMessage::ExecuteTask {
-                run_id: run_id,
-                task_id: 0,
+                task_id: task_id.clone(),
                 task: task.clone(),
                 response: tx,
                 tracker: log_tx,
@@ -567,8 +564,7 @@ mod tests {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         exe_tx
             .send(ExecutorMessage::StopTask {
-                run_id,
-                task_id: 0,
+                task_id,
                 response: cancel_tx,
             })
             .unwrap();
