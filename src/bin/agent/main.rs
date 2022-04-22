@@ -144,8 +144,8 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::scope("/api/v1")
                     .route("/resources", web::get().to(get_resources))
-                    .route("/{run_id}/{name}/{instance}", web::post().to(submit_task))
-                    .route("/{run_id}/{name}/{instance}", web::delete().to(stop_task)),
+                    .route("/{task_id}", web::post().to(submit_task))
+                    .route("/{task_id}", web::delete().to(stop_task)),
             )
     })
     .bind(config.listen_spec())?
