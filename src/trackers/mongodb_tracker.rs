@@ -19,6 +19,10 @@ pub fn start(url: String, db_name: String, msgs: mpsc::UnboundedReceiver<Tracker
 struct MongoTask {
     #[serde(default)]
     _id: TaskID,
+
+    #[serde(default)]
+    run_id: RunID,
+
     #[serde(default)]
     record: TaskRecord,
 }
@@ -140,6 +144,7 @@ impl MongoTracker {
             .map(|(task_id, task)| {
                 let mut mtask = MongoTask {
                     _id: task_id.clone(),
+                    run_id: task_id.run_id(),
                     record: TaskRecord::new(task.clone()),
                 };
                 mtask
@@ -277,7 +282,7 @@ impl MongoTracker {
                     vec![
                         doc! {
                             "$match": {
-                                "_id": { "$regex":  bson::to_bson(&format!("^{}_", run._id)).unwrap() }
+                                "run_id": bson::to_bson(&run._id).unwrap()
                             }
                         },
                         // Get the last state
@@ -378,7 +383,7 @@ impl MongoTracker {
             .tasks
             .aggregate(
                 vec![
-                    doc! { "$match": { "_id": { "$regex":  bson::to_bson(&format!("^{}_", run_id)).unwrap() } } },
+                    doc! { "$match": { "run_id": bson::to_bson(&run_id).unwrap() } },
                     doc! { "$addFields": { "state": { "$last": "$record.state_changes.state" } } },
                     doc! { "$project": { "_id": 1u32, "state": 1u32 } },
                 ],
@@ -399,10 +404,7 @@ impl MongoTracker {
         let mut tasks = HashMap::new();
         let mut tc_cursor = self
             .tasks
-            .find(
-                doc! { "_id": { "$regex":  bson::to_bson(&format!("^{}_", run_id)).unwrap() } },
-                None,
-            )
+            .find(doc! { "run_id": bson::to_bson(&run_id).unwrap() }, None)
             .await?;
 
         while let Some(mtask) = tc_cursor.try_next().await? {
