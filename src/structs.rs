@@ -107,6 +107,9 @@ pub enum State {
     Killed,
 }
 
+// Not crazy about this, it feels very kludgy, but I don't have a better
+// solution to deal with json serialization issues. This may also be more
+// efficient as a hash key.
 #[derive(Clone, Debug, Serialize, Deserialize, Default, Hash, PartialEq, Eq)]
 pub struct TaskID(String);
 
