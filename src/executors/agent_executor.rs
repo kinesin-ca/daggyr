@@ -151,6 +151,7 @@ async fn start_agent_executor(
                 });
             }
             ExecuteTask {
+                run_id,
                 task_id,
                 task,
                 response,
@@ -162,7 +163,11 @@ async fn start_agent_executor(
                         attempt.succeeded = false;
                         attempt.executor.extend(e);
                         response
-                            .send(RunnerMessage::ExecutionReport { task_id, attempt })
+                            .send(RunnerMessage::ExecutionReport {
+                                run_id,
+                                task_id,
+                                attempt,
+                            })
                             .expect("Unable to send response");
                     }
                     Ok(()) => {
@@ -190,6 +195,7 @@ async fn start_agent_executor(
                             let (tx, rx) = oneshot::channel();
                             tracker
                                 .send(TrackerMessage::UpdateTaskState {
+                                    run_id,
                                     task_id: task_id.clone(),
                                     state: State::Running,
                                     response: tx,
@@ -197,7 +203,7 @@ async fn start_agent_executor(
                                 .unwrap_or(());
                             rx.await.unwrap().expect("Unable to update task state");
 
-                            let submit_url = format!("{}/{}", base_url, task_id);
+                            let submit_url = format!("{}/{}/{}", base_url, run_id, task_id);
                             // TODO Handle the case where an agent stops responding
                             let result = submit_client
                                 .post(submit_url)
@@ -213,7 +219,11 @@ async fn start_agent_executor(
                                         .executor
                                         .push(format!("Executed on agent at {}", base_url));
                                     response
-                                        .send(RunnerMessage::ExecutionReport { task_id, attempt })
+                                        .send(RunnerMessage::ExecutionReport {
+                                            run_id,
+                                            task_id,
+                                            attempt,
+                                        })
                                         .expect("Unable to send message to runner");
                                 }
                                 _ => {
@@ -223,7 +233,11 @@ async fn start_agent_executor(
                                         .executor
                                         .push(format!("Unable to dispatch task to {}", base_url));
                                     response
-                                        .send(RunnerMessage::ExecutionReport { task_id, attempt })
+                                        .send(RunnerMessage::ExecutionReport {
+                                            run_id,
+                                            task_id,
+                                            attempt,
+                                        })
                                         .expect("Unable to send response");
                                 }
                             }

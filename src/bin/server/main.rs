@@ -27,7 +27,7 @@ struct RunSpec {
     #[serde(default)]
     tags: RunTags,
 
-    tasks: TaskSetSpec,
+    tasks: TaskSet,
 
     #[serde(default)]
     parameters: Parameters,
@@ -94,8 +94,7 @@ async fn submit_run(spec: web::Json<RunSpec>, state: web::Data<AppState>) -> imp
         });
     }
 
-    let taskspecs = spec.tasks.to_task_set(0);
-    let tasks: Vec<Task> = taskspecs.iter().map(|(_, v)| v).cloned().collect();
+    let tasks: Vec<Task> = spec.tasks.iter().map(|(_, v)| v).cloned().collect();
 
     // Validate the tasks
     let (response, rx) = oneshot::channel();
@@ -114,7 +113,7 @@ async fn submit_run(spec: web::Json<RunSpec>, state: web::Data<AppState>) -> imp
         .runner
         .send(RunnerMessage::Start {
             tags: spec.tags.clone(),
-            tasks: taskspecs,
+            tasks: spec.tasks.clone(),
             response: tx,
             parameters: spec.parameters.clone(),
             tracker: state.config.tracker.clone(),
@@ -206,13 +205,17 @@ async fn get_run_task(
     path: web::Path<(RunID, TaskID)>,
     state: web::Data<AppState>,
 ) -> impl Responder {
-    let (_run_id, task_id) = path.into_inner();
+    let (run_id, task_id) = path.into_inner();
     let (response, rx) = oneshot::channel();
 
     state
         .config
         .tracker
-        .send(TrackerMessage::GetTask { task_id, response })
+        .send(TrackerMessage::GetTask {
+            run_id,
+            task_id,
+            response,
+        })
         .unwrap();
 
     match rx.await.unwrap() {
@@ -231,6 +234,7 @@ async fn submit_task_attempt(
         .config
         .runner
         .send(RunnerMessage::ExecutionReport {
+            run_id: payload.run_id,
             task_id: payload.task_id.clone(),
             attempt: payload.attempt.clone(),
         })

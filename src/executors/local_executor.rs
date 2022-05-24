@@ -82,9 +82,7 @@ async fn expand_tasks(tasks: TaskSet, parameters: Parameters) -> Result<TaskSet>
                     .cloned()
                     .zip(new_env_vals.iter().cloned())
                     .collect();
-                let mut new_task_id = task_id.clone();
-                new_task_id.set_instance(i);
-                expanded_tasks.insert(new_task_id, new_task);
+                expanded_tasks.insert(task_id.clone(), new_task);
             }
         }
     }
@@ -163,7 +161,7 @@ async fn start_local_executor(
     max_parallel: usize,
     mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>,
 ) {
-    let mut task_channels = HashMap::<TaskID, oneshot::Sender<()>>::new();
+    let mut task_channels = HashMap::<(RunID, TaskID), oneshot::Sender<()>>::new();
 
     let mut running = FuturesUnordered::new();
 
@@ -187,19 +185,21 @@ async fn start_local_executor(
                 });
             }
             ExecuteTask {
+                run_id,
                 task_id,
                 task,
                 response,
                 tracker,
             } => {
                 let (tx, rx) = oneshot::channel();
-                task_channels.insert(task_id.clone(), tx);
+                task_channels.insert((run_id, task_id.clone()), tx);
                 if running.len() == max_parallel {
                     running.next().await;
                 }
                 let (upd, _) = oneshot::channel();
                 tracker
                     .send(TrackerMessage::UpdateTaskState {
+                        run_id,
                         task_id: task_id.clone(),
                         state: State::Running,
                         response: upd,
@@ -208,12 +208,20 @@ async fn start_local_executor(
                 running.push(tokio::spawn(async move {
                     let attempt = run_task(task, rx).await;
                     response
-                        .send(RunnerMessage::ExecutionReport { task_id, attempt })
+                        .send(RunnerMessage::ExecutionReport {
+                            run_id,
+                            task_id,
+                            attempt,
+                        })
                         .unwrap();
                 }));
             }
-            StopTask { task_id, response } => {
-                if let Some(tx) = task_channels.remove(&task_id) {
+            StopTask {
+                run_id,
+                task_id,
+                response,
+            } => {
+                if let Some(tx) = task_channels.remove(&(run_id, task_id)) {
                     tx.send(()).unwrap_or(());
                 }
                 response.send(()).unwrap_or(());

@@ -12,6 +12,7 @@ pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<Executor
                 tasks, response, ..
             } => response.send(Ok(tasks)).unwrap_or(()),
             ExecuteTask {
+                run_id,
                 task_id,
                 response,
                 tracker,
@@ -20,6 +21,7 @@ pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<Executor
                 let (upd, _) = oneshot::channel();
                 tracker
                     .send(TrackerMessage::UpdateTaskState {
+                        run_id,
                         task_id: task_id.clone(),
                         state: State::Running,
                         response: upd,
@@ -29,6 +31,7 @@ pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<Executor
                 attempt.succeeded = true;
                 response
                     .send(RunnerMessage::ExecutionReport {
+                        run_id,
                         task_id: task_id.clone(),
                         attempt,
                     })

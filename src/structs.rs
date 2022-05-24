@@ -2,11 +2,11 @@ use super::Result;
 pub use chrono::{DateTime, Utc};
 pub use serde::{Deserialize, Serialize};
 pub use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
 pub type RunID = usize;
+pub type TaskID = String;
 
 pub type Parameters = HashMap<String, Vec<String>>;
 
@@ -107,65 +107,14 @@ pub enum State {
     Killed,
 }
 
-// Not crazy about this, it feels very kludgy, but I don't have a better
-// solution to deal with json serialization issues. This may also be more
-// efficient as a hash key.
-#[derive(Clone, Debug, Serialize, Deserialize, Default, Hash, PartialEq, Eq)]
-pub struct TaskID(String);
-
-impl TaskID {
-    pub fn new(run_id: RunID, name: &String, instance: usize) -> Self {
-        TaskID(format!("{}_{}_{}", run_id, name, instance))
-    }
-
-    pub fn run_id(&self) -> RunID {
-        let first = self.0.find('_').unwrap();
-        self.0[..first].parse::<RunID>().unwrap()
-    }
-
-    pub fn name(&self) -> &str {
-        let first = self.0.find('_').unwrap() + 1;
-        let last = self.0.rfind('_').unwrap();
-        &self.0[first..last]
-    }
-
-    pub fn instance(&self) -> usize {
-        let last = self.0.rfind('_').unwrap() + 1;
-        self.0[last..].parse::<usize>().unwrap()
-    }
-
-    pub fn set_run_id(&mut self, run_id: RunID) {
-        let first = self.0.find('_').unwrap();
-        self.0 = format!("{}{}", run_id, self.0[first..].to_owned());
-    }
-
-    pub fn set_instance(&mut self, instance: usize) {
-        let last = self.0.rfind('_').unwrap() + 1;
-        self.0 = format!("{}{}", self.0[..last].to_owned(), instance);
-    }
-}
-
-impl Deref for TaskID {
-    type Target = String;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for TaskID {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl fmt::Display for TaskID {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Default)]
 pub struct Task {
+    #[serde(default)]
+    pub run_id: RunID,
+
+    #[serde(default)]
+    pub expansion_values: HashMap<String, String>,
+
     #[serde(default)]
     pub is_generator: bool,
 
@@ -187,45 +136,12 @@ pub struct Task {
 impl Task {
     pub fn new() -> Self {
         Task {
-            is_generator: false,
-            max_retries: 0,
-            retries: 0,
-            details: serde_json::Value::Null,
-            children: Vec::new(),
-            parents: Vec::new(),
+            ..Default::default()
         }
     }
 }
 
 pub type TaskSet = HashMap<TaskID, Task>;
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct TaskSetSpec(HashMap<String, Task>);
-
-impl Deref for TaskSetSpec {
-    type Target = HashMap<String, Task>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for TaskSetSpec {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl TaskSetSpec {
-    pub fn new() -> Self {
-        TaskSetSpec(HashMap::new())
-    }
-
-    pub fn to_task_set(&self, run_id: RunID) -> TaskSet {
-        self.iter()
-            .map(|(name, task)| (TaskID::new(run_id, name, 0), task.clone()))
-            .collect()
-    }
-}
 
 #[test]
 fn test_task_deserialization() {

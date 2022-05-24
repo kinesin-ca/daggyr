@@ -3,19 +3,6 @@ use crate::structs::*;
 use crate::Result;
 use tokio::sync::mpsc;
 
-fn range_checker(runs: &Vec<RunRecord>, task_id: TaskID) -> Result<()> {
-    let run_id = task_id.run_id();
-    if run_id >= runs.len() {
-        return Err(anyhow!("No run with ID {} exists", run_id));
-    }
-
-    if !runs[run_id].tasks.contains_key(&task_id) {
-        return Err(anyhow!("No task with ID {:?}", task_id));
-    }
-
-    Ok(())
-}
-
 pub fn start(msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     tokio::spawn(async move {
         start_memory_tracker(msgs).await;
@@ -33,13 +20,12 @@ impl MemoryTracker {
         MemoryTracker { runs: Vec::new() }
     }
 
-    fn range_checker(&self, task_id: &TaskID) -> Result<()> {
-        let run_id = task_id.run_id();
+    fn range_checker(&self, run_id: RunID, task_id: &TaskID) -> Result<()> {
         if run_id >= self.runs.len() {
             return Err(anyhow!("No run with ID {} exists", run_id));
         }
 
-        if !self.runs[run_id].tasks.contains_key(&task_id) {
+        if !self.runs[run_id].tasks.contains_key(task_id) {
             return Err(anyhow!("No task with ID {:?}", task_id));
         }
 
@@ -68,13 +54,9 @@ impl MemoryTracker {
         Ok(())
     }
 
-    fn update_task(&mut self, task_id: TaskID, task: Task) -> Result<()> {
-        self.range_checker(&task_id)?;
-        self.runs[task_id.run_id()]
-            .tasks
-            .get_mut(&task_id)
-            .unwrap()
-            .task = task;
+    fn update_task(&mut self, run_id: RunID, task_id: TaskID, task: Task) -> Result<()> {
+        self.range_checker(run_id, &task_id)?;
+        self.runs[run_id].tasks.get_mut(&task_id).unwrap().task = task;
         Ok(())
     }
 
@@ -89,9 +71,9 @@ impl MemoryTracker {
         }
     }
 
-    fn update_task_state(&mut self, task_id: TaskID, state: State) -> Result<()> {
-        self.range_checker(&task_id)?;
-        self.runs[task_id.run_id()]
+    fn update_task_state(&mut self, run_id: RunID, task_id: TaskID, state: State) -> Result<()> {
+        self.range_checker(run_id, &task_id)?;
+        self.runs[run_id]
             .tasks
             .get_mut(&task_id)
             .unwrap()
@@ -100,9 +82,14 @@ impl MemoryTracker {
         Ok(())
     }
 
-    fn log_task_attempt(&mut self, task_id: TaskID, attempt: TaskAttempt) -> Result<()> {
-        self.range_checker(&task_id)?;
-        self.runs[task_id.run_id()]
+    fn log_task_attempt(
+        &mut self,
+        run_id: RunID,
+        task_id: TaskID,
+        attempt: TaskAttempt,
+    ) -> Result<()> {
+        self.range_checker(run_id, &task_id)?;
+        self.runs[run_id]
             .tasks
             .get_mut(&task_id)
             .unwrap()
@@ -251,13 +238,9 @@ impl MemoryTracker {
         }
     }
 
-    fn get_task(&self, task_id: TaskID) -> Result<TaskRecord> {
-        self.range_checker(&task_id)?;
-        Ok(self.runs[task_id.run_id()]
-            .tasks
-            .get(&task_id)
-            .unwrap()
-            .clone())
+    fn get_task(&self, run_id: RunID, task_id: TaskID) -> Result<TaskRecord> {
+        self.range_checker(run_id, &task_id)?;
+        Ok(self.runs[run_id].tasks.get(&task_id).unwrap().clone())
     }
 }
 
@@ -287,12 +270,13 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                     .unwrap_or(());
             }
             UpdateTask {
+                run_id,
                 task_id,
                 task,
                 response,
             } => {
                 response
-                    .send(tracker.update_task(task_id.clone(), task.clone()))
+                    .send(tracker.update_task(run_id, task_id.clone(), task.clone()))
                     .unwrap_or(());
             }
             UpdateState {
@@ -305,21 +289,23 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                     .unwrap_or(());
             }
             UpdateTaskState {
+                run_id,
                 task_id,
                 state,
                 response,
             } => {
                 response
-                    .send(tracker.update_task_state(task_id.clone(), state))
+                    .send(tracker.update_task_state(run_id, task_id.clone(), state))
                     .unwrap_or(());
             }
             LogTaskAttempt {
+                run_id,
                 task_id,
                 attempt,
                 response,
             } => {
                 response
-                    .send(tracker.log_task_attempt(task_id.clone(), attempt.clone()))
+                    .send(tracker.log_task_attempt(run_id, task_id.clone(), attempt.clone()))
                     .unwrap_or(());
             }
             GetRuns {
@@ -357,9 +343,13 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
             GetTasks { run_id, response } => {
                 response.send(tracker.get_tasks(run_id)).unwrap_or(());
             }
-            GetTask { task_id, response } => {
+            GetTask {
+                run_id,
+                task_id,
+                response,
+            } => {
                 response
-                    .send(tracker.get_task(task_id.clone()))
+                    .send(tracker.get_task(run_id, task_id.clone()))
                     .unwrap_or(());
             }
             Stop {} => break,

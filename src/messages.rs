@@ -17,6 +17,7 @@ pub enum TrackerMessage {
         response: oneshot::Sender<Result<()>>,
     },
     UpdateTask {
+        run_id: RunID,
         task_id: TaskID,
         task: Task,
         response: oneshot::Sender<Result<()>>,
@@ -27,11 +28,13 @@ pub enum TrackerMessage {
         response: oneshot::Sender<Result<()>>,
     },
     UpdateTaskState {
+        run_id: RunID,
         task_id: TaskID,
         state: State,
         response: oneshot::Sender<Result<()>>,
     },
     LogTaskAttempt {
+        run_id: RunID,
         task_id: TaskID,
         attempt: TaskAttempt,
         response: oneshot::Sender<Result<()>>,
@@ -70,6 +73,7 @@ pub enum TrackerMessage {
         response: oneshot::Sender<Result<HashMap<TaskID, TaskRecord>>>,
     },
     GetTask {
+        run_id: RunID,
         task_id: TaskID,
         response: oneshot::Sender<Result<TaskRecord>>,
     },
@@ -94,6 +98,7 @@ pub enum RunnerMessage {
         response: oneshot::Sender<Result<()>>,
     },
     ExecutionReport {
+        run_id: RunID,
         task_id: TaskID,
         attempt: TaskAttempt,
     },
@@ -116,12 +121,14 @@ pub enum ExecutorMessage {
         response: oneshot::Sender<Result<TaskSet>>,
     },
     ExecuteTask {
+        run_id: RunID,
         task_id: TaskID,
         task: Task,
         response: mpsc::UnboundedSender<RunnerMessage>,
         tracker: mpsc::UnboundedSender<TrackerMessage>,
     },
     StopTask {
+        run_id: RunID,
         task_id: TaskID,
         response: oneshot::Sender<()>,
     },
@@ -131,6 +138,7 @@ pub enum ExecutorMessage {
 /// Message used to report on the completion of a task
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AttemptReport {
+    pub run_id: RunID,
     pub task_id: TaskID,
     pub attempt: TaskAttempt,
 }
