@@ -552,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_simple_dag_run() -> () {
-        let tasks_spec: TaskSet = serde_json::from_str(
+        let tasks: TaskSet = serde_json::from_str(
             r#"
             {
                 "simple_task": {
@@ -576,17 +576,15 @@ mod tests {
         )
         .unwrap();
 
-        let tasks = tasks_spec.to_task_set(0);
-
         let parameters = HashMap::new();
 
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
-        for (mut task_id, task) in tasks {
-            task_id.set_run_id(run_id);
+        for (task_id, task) in tasks {
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {
+                    run_id,
                     task_id: task_id.clone(),
                     response: tx,
                 })
@@ -607,7 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_failing_generating_dag_run() -> () {
-        let tasks_spec: TaskSet = serde_json::from_str(
+        let tasks: TaskSet = serde_json::from_str(
             r#"{
                 "simple_task": {
                     "details": {
@@ -631,17 +629,15 @@ mod tests {
         )
         .unwrap();
 
-        let tasks = tasks_spec.to_task_set(0);
-
         let parameters = HashMap::new();
 
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
-        for (mut task_id, task) in tasks {
-            task_id.set_run_id(run_id);
+        for (task_id, task) in tasks {
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {
+                    run_id,
                     task_id: task_id.clone(),
                     response: tx,
                 })
@@ -650,7 +646,7 @@ mod tests {
             let task_record = rx.await.unwrap().unwrap();
             assert_eq!(task, task_record.task);
 
-            match task_id.name() {
+            match task_id.as_ref() {
                 "simple_task" => {
                     assert_eq!(task_record.state_changes.len(), 3);
                     assert_eq!(
@@ -676,7 +672,7 @@ mod tests {
     async fn test_successful_generating_dag_run() -> () {
         use serde_json::json;
 
-        let tasks_spec: TaskSet = serde_json::from_str(
+        let mut tasks: TaskSet = serde_json::from_str(
             r#"{
                 "other_task": {
                     "details": {
@@ -695,10 +691,9 @@ mod tests {
             }
         }"#;
 
-        let mut tasks = tasks_spec.to_task_set(0);
         let parameters = HashMap::new();
 
-        let task_id = TaskID::new(0, &"fancy_generator".to_owned(), 0);
+        let task_id = "fancy_generator".to_owned();
 
         let mut gen_task = Task::new();
         gen_task.is_generator = true;
@@ -709,24 +704,23 @@ mod tests {
 
         tasks.insert(task_id, gen_task);
 
+        // This will run the tasks and process the generators
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
-        let new_tasks_spec: TaskSet = serde_json::from_str(new_task).unwrap();
-        let mut new_tasks = new_tasks_spec.to_task_set(0);
+        // Make tasks match the expected output
+        let mut new_tasks: TaskSet = serde_json::from_str(new_task).unwrap();
         for (task_id, task) in new_tasks.iter_mut() {
             task.children.push("other_task".to_owned());
             task.parents.push("fancy_generator".to_owned());
-            let new_id = TaskID::new(run_id, &task_id.name().to_owned(), 0);
-            tasks.insert(new_id, task.clone());
+            tasks.insert(task_id.clone(), task.clone());
         }
-
         assert_eq!(tasks.len(), 3);
 
-        for (mut task_id, task) in tasks {
-            task_id.set_run_id(run_id);
+        for (task_id, task) in tasks {
             let (tx, rx) = oneshot::channel();
             log_tx
                 .send(TrackerMessage::GetTask {
+                    run_id,
                     task_id,
                     response: tx,
                 })

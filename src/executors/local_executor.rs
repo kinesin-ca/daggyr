@@ -256,7 +256,8 @@ mod tests {
         )
         .unwrap();
 
-        let task_id = TaskID::new(0, &"task_a".to_owned(), 0);
+        let run_id: RunID = 0;
+        let task_id = "task_a".to_owned();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);
@@ -267,6 +268,7 @@ mod tests {
         // Submit the task
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
         tx.send(ExecutorMessage::ExecuteTask {
+            run_id,
             task_id: task_id.clone(),
             task: task,
             response: run_tx,
@@ -282,6 +284,7 @@ mod tests {
             RunnerMessage::ExecutionReport {
                 task_id: rtid,
                 attempt,
+                ..
             } => {
                 assert!(attempt.succeeded);
                 assert_eq!(attempt.output, "hello world\n");
@@ -305,7 +308,8 @@ mod tests {
         )
         .unwrap();
 
-        let task_id = TaskID::new(0, &"task_a".to_owned(), 0);
+        let run_id: RunID = 0;
+        let task_id = "task_a".to_owned();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);
@@ -316,6 +320,7 @@ mod tests {
         // Submit the task
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
         tx.send(ExecutorMessage::ExecuteTask {
+            run_id,
             task_id: task_id.clone(),
             task,
             response: run_tx,
@@ -325,6 +330,7 @@ mod tests {
 
         let (response, cancel_rx) = oneshot::channel();
         tx.send(ExecutorMessage::StopTask {
+            run_id,
             task_id: task_id.clone(),
             response,
         })
@@ -339,6 +345,7 @@ mod tests {
             RunnerMessage::ExecutionReport {
                 task_id: rtid,
                 attempt,
+                ..
             } => {
                 assert!(attempt.killed);
                 assert!(attempt.stop_time - attempt.start_time < chrono::Duration::seconds(5));
@@ -362,7 +369,8 @@ mod tests {
         )
         .unwrap();
 
-        let task_id = TaskID::new(0, &"task_a".to_owned(), 0);
+        let run_id: RunID = 0;
+        let task_id = "task_a".to_owned();
 
         let max_parallel = 5;
 
@@ -375,10 +383,10 @@ mod tests {
         let mut chans = Vec::new();
         for i in 0..10 {
             // Submit the task
-            let mut ntid = task_id.clone();
-            ntid.set_instance(i);
+            let ntid = format!("{}_{}", task_id, i);
             let (run_tx, run_rx) = mpsc::unbounded_channel();
             tx.send(ExecutorMessage::ExecuteTask {
+                run_id,
                 task_id: ntid,
                 task: task.clone(),
                 response: run_tx,
@@ -433,7 +441,8 @@ mod tests {
         )
         .unwrap();
 
-        let task_id = TaskID::new(0, &"task_a".to_owned(), 0);
+        let run_id: RunID = 0;
+        let task_id = "task_a".to_owned();
 
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         noop_tracker::start(log_rx);
@@ -445,6 +454,7 @@ mod tests {
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();
         exe_tx
             .send(ExecutorMessage::ExecuteTask {
+                run_id,
                 task_id: task_id.clone(),
                 task: task.clone(),
                 response: run_tx,
@@ -457,6 +467,7 @@ mod tests {
             RunnerMessage::ExecutionReport {
                 task_id: rtid,
                 attempt,
+                ..
             } => {
                 assert!(attempt.succeeded);
                 assert!(attempt.output.len() >= 1024 * 1024 * 10);
