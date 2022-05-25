@@ -29,8 +29,12 @@ struct LocalTaskDetail {
     timeout: i64,
 }
 
+fn get_details(details: serde_json::Value) -> Result<LocalTaskDetail, serde_json::Error> {
+    serde_json::from_value::<LocalTaskDetail>(details)
+}
+
 fn get_task_details(task: &Task) -> Result<LocalTaskDetail, serde_json::Error> {
-    serde_json::from_value::<LocalTaskDetail>(task.details.clone())
+    get_details(task.details.clone())
 }
 
 async fn validate_tasks(tasks: Vec<Task>) -> Result<(), Vec<String>> {
@@ -48,42 +52,50 @@ async fn validate_tasks(tasks: Vec<Task>) -> Result<(), Vec<String>> {
     }
 }
 
-async fn expand_tasks(tasks: TaskSet, parameters: Parameters) -> Result<TaskSet> {
-    let mut expanded_tasks = HashMap::new();
+async fn expand_task_details(
+    details: serde_json::Value,
+    parameters: Parameters,
+) -> Result<Vec<(serde_json::Value, Vec<(String, String)>)>> {
+    let mut expanded_tasks = Vec::new();
 
-    for (task_id, task) in tasks {
-        let template = get_task_details(&task)?;
+    let template = get_details(details.clone())?;
 
-        let all_vars: Vec<String> = parameters.keys().into_iter().cloned().collect();
+    let all_vars: Vec<String> = parameters.keys().into_iter().cloned().collect();
 
-        // Need to decompose the environment to apply the expansion
-        let env_keys: Vec<String> = template.environment.keys().into_iter().cloned().collect();
-        let env_values: Vec<String> = env_keys
+    // Need to decompose the environment to apply the expansion
+    let env_keys: Vec<String> = template.environment.keys().into_iter().cloned().collect();
+    let env_values: Vec<String> = env_keys
+        .iter()
+        .map(|x| template.environment[x].clone())
+        .collect();
+
+    // The expansion set will include both environment
+    let vars: HashSet<_> = find_applicable_vars(&template.command, &all_vars)
+        .union(&find_applicable_vars(&env_values, &all_vars))
+        .cloned()
+        .collect();
+
+    if vars.is_empty() {
+        expanded_tasks.push((details, Vec::new()));
+    } else {
+        // Build out the interpolation sets
+        let interpolation_sets = generate_interpolation_sets(&parameters, &vars);
+
+        let new_cmds = apply_vars(&template.command, &interpolation_sets);
+        let new_envs = apply_vars(&env_values, &interpolation_sets);
+        for ((new_cmd, new_env_vals), int_set) in new_cmds
             .iter()
-            .map(|x| template.environment[x].clone())
-            .collect();
-
-        // The expansion set will include both environment
-        let vars: HashSet<_> = find_applicable_vars(&template.command, &all_vars)
-            .union(&find_applicable_vars(&env_values, &all_vars))
-            .cloned()
-            .collect();
-
-        if vars.is_empty() {
-            expanded_tasks.insert(task_id, task);
-        } else {
-            let new_cmds = apply_vars(&template.command, &parameters, &vars);
-            let new_envs = apply_vars(&env_values, &parameters, &vars);
-            for (i, (new_cmd, new_env_vals)) in new_cmds.iter().zip(new_envs.iter()).enumerate() {
-                let mut new_task = task.clone();
-                new_task.details["command"] = serde_json::json!(new_cmd);
-                new_task.details["environment"] = env_keys
-                    .iter()
-                    .cloned()
-                    .zip(new_env_vals.iter().cloned())
-                    .collect();
-                expanded_tasks.insert(task_id.clone(), new_task);
-            }
+            .zip(new_envs.iter())
+            .zip(interpolation_sets.into_iter())
+        {
+            let mut new_details = details.clone();
+            new_details["command"] = serde_json::json!(new_cmd);
+            new_details["environment"] = env_keys
+                .iter()
+                .cloned()
+                .zip(new_env_vals.iter().cloned())
+                .collect();
+            expanded_tasks.push((new_details, int_set))
         }
     }
 
@@ -174,13 +186,13 @@ async fn start_local_executor(
                     response.send(result).unwrap_or(());
                 });
             }
-            ExpandTasks {
-                tasks,
+            ExpandTaskDetails {
+                details,
                 parameters,
                 response,
             } => {
                 tokio::spawn(async move {
-                    let result = expand_tasks(tasks, parameters).await;
+                    let result = expand_task_details(details, parameters).await;
                     response.send(result).unwrap_or(());
                 });
             }

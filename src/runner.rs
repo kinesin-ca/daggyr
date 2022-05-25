@@ -39,15 +39,7 @@ impl Run {
         };
 
         // Expand the tasks
-        let (tx, rx) = oneshot::channel();
-        run.executor
-            .send(ExecutorMessage::ExpandTasks {
-                tasks,
-                parameters: run.parameters.clone(),
-                response: tx,
-            })
-            .unwrap();
-        let exp_tasks = rx.await??;
+        let expanded_tasks = run.expand_tasks(tasks).await?;
 
         // Create the run ID and update the tracker
         let (tx, rx) = oneshot::channel();
@@ -62,7 +54,7 @@ impl Run {
 
         // Set the RunID on the tasks
         let mut updated_tasks = TaskSet::new();
-        for (task_id, mut task) in exp_tasks {
+        for (task_id, mut task) in expanded_tasks {
             task.run_id = run.run_id;
             updated_tasks.insert(task_id, task);
         }
@@ -83,6 +75,80 @@ impl Run {
         run.update_state(State::Running).await?;
 
         Ok(run)
+    }
+
+    async fn expand_tasks(&self, tasks: TaskSet) -> Result<TaskSet> {
+        let mut expanded_tasks = TaskSet::new();
+        for (task_id, mut task) in tasks {
+            let (tx, rx) = oneshot::channel();
+            self.executor
+                .send(ExecutorMessage::ExpandTaskDetails {
+                    details: task.details.clone(),
+                    parameters: self.parameters.clone(),
+                    response: tx,
+                })
+                .unwrap();
+            let exp_tasks = rx.await??;
+
+            // If this is a simple task, add it directly
+            if exp_tasks.len() == 1 {
+                let (details, exp_values) = exp_tasks.first().unwrap();
+                task.details = details.clone();
+                task.expansion_values = exp_values.clone();
+                expanded_tasks.insert(task_id, task);
+            } else {
+                // Need to create a head and tail node
+
+                // Parents go into head, children go into tail
+                let mut head = Task::new();
+                head.task_type = TaskType::Structural;
+                head.parents = task.parents.clone();
+
+                let head_id = task_id.clone();
+
+                // The tail task is the collector
+                let mut tail = Task::new();
+                tail.task_type = TaskType::Structural;
+                tail.children = task.children.clone();
+                let tail_id = format!("{}.tail", task_id);
+                expanded_tasks.insert(tail_id.clone(), tail);
+
+                // Build out the interior jobs
+                let template = Task {
+                    children: vec![tail_id.clone()],
+                    parents: Vec::new(),
+                    task_type: TaskType::Normal,
+                    ..task
+                };
+
+                for (details, expansion_values) in exp_tasks {
+                    let interior = Task {
+                        details,
+                        expansion_values,
+                        ..template.clone()
+                    };
+
+                    // Name are: {task_id}[.PARAM:VALUE]+
+                    let name = format!(
+                        "{}.{}",
+                        task_id,
+                        interior
+                            .expansion_values
+                            .iter()
+                            .map(|(k, v)| format!("{}:{}", k, v))
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    );
+
+                    head.children.push(name.clone());
+                    expanded_tasks.insert(name.clone(), interior);
+                }
+
+                // Insert the head
+                expanded_tasks.insert(head_id, head);
+            }
+        }
+        Ok(expanded_tasks)
     }
 
     /// Retrieve an existing run from the tracker and reset it
@@ -226,17 +292,25 @@ impl Run {
         // Enqueue as many tasks as possible
         loop {
             if let Some(task_id) = self.dag.visit_next() {
-                // Start the executor
-                self.executor
-                    .send(ExecutorMessage::ExecuteTask {
-                        run_id: self.run_id,
-                        task_id: task_id.clone(),
-                        task: self.tasks.get(&task_id).unwrap().clone(),
-                        response: self.runner.clone(),
-                        tracker: self.tracker.clone(),
-                    })
-                    .unwrap_or(());
-                // TODO this should probably be an error
+                match self.tasks.get(&task_id).unwrap().task_type {
+                    TaskType::Normal => {
+                        // Start the executor
+                        self.executor
+                            .send(ExecutorMessage::ExecuteTask {
+                                run_id: self.run_id,
+                                task_id: task_id.clone(),
+                                task: self.tasks.get(&task_id).unwrap().clone(),
+                                response: self.runner.clone(),
+                                tracker: self.tracker.clone(),
+                            })
+                            .unwrap_or(());
+                    }
+                    TaskType::Structural => {
+                        let mut attempt = TaskAttempt::new();
+                        attempt.succeeded = true;
+                        self.complete_task(&task_id, attempt).await.unwrap();
+                    }
+                }
             } else {
                 break;
             }
@@ -247,15 +321,7 @@ impl Run {
     pub async fn handle_generator(&mut self, task_id: TaskID, attempt: &TaskAttempt) -> Result<()> {
         let tasks = serde_json::from_str::<TaskSet>(&attempt.output)?;
 
-        let (tx, rx) = oneshot::channel();
-        self.executor
-            .send(ExecutorMessage::ExpandTasks {
-                tasks,
-                parameters: self.parameters.clone(),
-                response: tx,
-            })
-            .unwrap();
-        let mut exp_tasks = rx.await??;
+        let mut exp_tasks = self.expand_tasks(tasks).await?;
         let gen_task = self.tasks.get(&task_id).unwrap();
         let children = gen_task.children.clone();
         let parents = vec![task_id.clone()];
@@ -598,6 +664,58 @@ mod tests {
                 State::Completed
             );
         }
+
+        // Close off tracker
+        log_tx.send(TrackerMessage::Stop {}).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dag_with_expansion() -> () {
+        let tasks: TaskSet = serde_json::from_str(
+            r#"
+            {
+                "A": {
+                    "details": {
+                        "command": [ "/bin/echo", "A" ]
+                    },
+                    "children": [ "B" ]
+                },
+                "B": {
+                    "details": {
+                        "command": [ "/bin/echo", "B", "DATE" ]
+                    },
+                    "children": [ "C" ]
+                },
+                "C": {
+                    "details": {
+                        "command": [ "/bin/echo", "" ]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let parameters: Parameters = serde_json::from_str(
+            r#"{
+                "DATE": [ "20200101", "20200102", "20200103" ]
+                }"#,
+        )
+        .unwrap();
+
+        let (run_id, log_tx) = run(&tasks, &parameters).await;
+
+        let (tx, rx) = oneshot::channel();
+        log_tx
+            .send(TrackerMessage::GetRun {
+                run_id,
+                response: tx,
+            })
+            .unwrap();
+
+        let rec = rx.await.unwrap().unwrap();
+        assert_eq!(rec.parameters, parameters);
+        assert_eq!(rec.tasks.len(), 5 + 2); // 5 actual tasks, 2 control tasks
+        assert_eq!(rec.state_changes.last().unwrap().state, State::Completed); // 5 actual tasks, 2 control tasks
 
         // Close off tracker
         log_tx.send(TrackerMessage::Stop {}).unwrap();

@@ -107,13 +107,28 @@ pub enum State {
     Killed,
 }
 
+#[derive(Clone, Serialize, Deserialize, Copy, Debug, PartialEq, Hash, Eq)]
+pub enum TaskType {
+    Normal,
+    Structural,
+}
+
+impl Default for TaskType {
+    fn default() -> Self {
+        TaskType::Normal
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Default)]
 pub struct Task {
     #[serde(default)]
     pub run_id: RunID,
 
     #[serde(default)]
-    pub expansion_values: HashMap<String, String>,
+    pub expansion_values: Vec<(String, String)>,
+
+    #[serde(default)]
+    pub task_type: TaskType,
 
     #[serde(default)]
     pub is_generator: bool,

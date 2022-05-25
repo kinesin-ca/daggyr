@@ -8,9 +8,9 @@ pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<Executor
 
         match msg {
             ValidateTasks { response, .. } => response.send(Ok(())).unwrap_or(()),
-            ExpandTasks {
-                tasks, response, ..
-            } => response.send(Ok(tasks)).unwrap_or(()),
+            ExpandTaskDetails {
+                details, response, ..
+            } => response.send(Ok(vec![(details, Vec::new())])).unwrap_or(()),
             ExecuteTask {
                 run_id,
                 task_id,

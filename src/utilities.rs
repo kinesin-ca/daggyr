@@ -46,15 +46,14 @@ fn cartesian_product<T: Clone>(input: &Vec<Vec<T>>) -> Vec<Vec<T>> {
     cur
 }
 
-// Flatten
-pub fn apply_vars(
-    template: &Vec<String>,
+pub fn generate_interpolation_sets(
     variables: &Parameters,
     subset: &HashSet<String>,
-) -> Vec<Vec<String>> {
+) -> Vec<Vec<(String, String)>> {
     let mut vals = Vec::new();
     let mut keys = Vec::new();
 
+    // Extract the variables that apply
     for (k, v) in variables.iter() {
         if subset.contains(k) {
             vals.push(v.to_vec());
@@ -62,16 +61,27 @@ pub fn apply_vars(
         }
     }
 
-    let interpolation_sets = cartesian_product(&vals)
+    // Generate the cartesian product of the variable values
+    cartesian_product(&vals)
         .iter()
         .map(|x| {
-            x.iter()
+            let mut v = x
+                .iter()
                 .zip(&keys)
                 .map(|(a, b)| (b.to_string(), a.to_string()))
-                .collect()
+                .collect::<Vec<(String, String)>>();
+            v.sort();
+            v
         })
-        .collect::<Vec<Vec<(String, String)>>>();
+        .collect()
+}
 
+// Flatten
+pub fn apply_vars(
+    template: &Vec<String>,
+    interpolation_sets: &Vec<Vec<(String, String)>>,
+) -> Vec<Vec<String>> {
+    // Generate the sets
     interpolation_sets
         .iter()
         .map(|set| {
@@ -106,7 +116,8 @@ mod tests {
             .collect::<Vec<String>>();
 
         let app_vars = find_applicable_vars(&input, &keys);
-        let result = apply_vars(&input, &vars, &app_vars);
+        let int_sets = generate_interpolation_sets(&vars, &app_vars);
+        let result = apply_vars(&input, &int_sets);
 
         assert_eq!(result.len(), 2);
     }
@@ -140,7 +151,8 @@ mod tests {
             .collect::<Vec<String>>();
 
         let app_vars = find_applicable_vars(&input, &keys);
-        let mut result = apply_vars(&input, &vars, &app_vars);
+        let int_sets = generate_interpolation_sets(&vars, &app_vars);
+        let mut result = apply_vars(&input, &int_sets);
 
         let mut expected_result = vec![
             vec![

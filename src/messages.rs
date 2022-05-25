@@ -115,10 +115,10 @@ pub enum ExecutorMessage {
         tasks: Vec<Task>,
         response: oneshot::Sender<Result<(), Vec<String>>>,
     },
-    ExpandTasks {
-        tasks: TaskSet,
+    ExpandTaskDetails {
+        details: serde_json::Value,
         parameters: Parameters,
-        response: oneshot::Sender<Result<TaskSet>>,
+        response: oneshot::Sender<Result<Vec<(serde_json::Value, Vec<(String, String)>)>>>,
     },
     ExecuteTask {
         run_id: RunID,
