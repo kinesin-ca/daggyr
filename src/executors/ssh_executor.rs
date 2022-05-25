@@ -194,15 +194,15 @@ async fn start_ssh_executor(
                     }
                 });
             }
-            ExpandTasks {
-                tasks,
+            ExpandTaskDetails {
+                details,
                 parameters,
                 response,
             } => {
                 let ltx = le_tx.clone();
                 tokio::spawn(async move {
-                    ltx.send(ExecutorMessage::ExpandTasks {
-                        tasks,
+                    ltx.send(ExecutorMessage::ExpandTaskDetails {
+                        details,
                         parameters,
                         response,
                     })
