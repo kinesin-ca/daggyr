@@ -82,11 +82,13 @@ impl Run {
     async fn expand_tasks(&self, tasks: TaskSet) -> Result<TaskSet> {
         let mut expanded_tasks = TaskSet::new();
         for (task_id, mut task) in tasks {
+            let mut task_parameters = self.parameters.clone();
+            task_parameters.extend(task.parameters.clone().into_iter());
             let (tx, rx) = oneshot::channel();
             self.executor
                 .send(ExecutorMessage::ExpandTaskDetails {
                     details: task.details.clone(),
-                    parameters: self.parameters.clone(),
+                    parameters: task_parameters,
                     response: tx,
                 })
                 .unwrap();
@@ -309,7 +311,13 @@ impl Run {
                 TaskType::Structural => {
                     let mut attempt = TaskAttempt::new();
                     attempt.succeeded = true;
-                    self.complete_task(&task_id, attempt).await.unwrap();
+                    self.runner
+                        .send(RunnerMessage::ExecutionReport {
+                            run_id: self.run_id,
+                            task_id,
+                            attempt,
+                        })
+                        .unwrap_or(());
                 }
             }
         }
@@ -611,7 +619,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_simple_dag_run() -> () {
+    async fn test_simple_dag_run() {
         let tasks: TaskSet = serde_json::from_str(
             r#"
             {
@@ -664,7 +672,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dag_with_expansion() -> () {
+    async fn test_dag_with_expansion() {
         let tasks: TaskSet = serde_json::from_str(
             r#"
             {
@@ -682,7 +690,10 @@ mod tests {
                 },
                 "C": {
                     "details": {
-                        "command": [ "/bin/echo", "" ]
+                        "command": [ "/bin/echo", "NAME" ]
+                    },
+                    "parameters": {
+                        "NAME": [ "ABCD", "DEFG" ]
                     }
                 }
             }"#,
@@ -708,15 +719,18 @@ mod tests {
 
         let rec = rx.await.unwrap().unwrap();
         assert_eq!(rec.parameters, parameters);
-        assert_eq!(rec.tasks.len(), 5 + 2); // 5 actual tasks, 2 control tasks
-        assert_eq!(rec.state_changes.last().unwrap().state, State::Completed); // 5 actual tasks, 2 control tasks
+        assert_eq!(
+            rec.tasks.len(),
+            1 + parameters["DATE"].len() + 2 + tasks["C"].parameters["NAME"].len() + 2
+        ); // 5 actual tasks, 2 control tasks
+        assert_eq!(rec.state_changes.last().unwrap().state, State::Completed);
 
         // Close off tracker
         log_tx.send(TrackerMessage::Stop {}).unwrap();
     }
 
     #[tokio::test]
-    async fn test_failing_generating_dag_run() -> () {
+    async fn test_failing_generating_dag_run() {
         let tasks: TaskSet = serde_json::from_str(
             r#"{
                 "simple_task": {
@@ -781,7 +795,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_successful_generating_dag_run() -> () {
+    async fn test_successful_generating_dag_run() {
         use serde_json::json;
 
         let mut tasks: TaskSet = serde_json::from_str(
@@ -821,7 +835,7 @@ mod tests {
 
         // Make tasks match the expected output
         let mut new_tasks: TaskSet = serde_json::from_str(new_task).unwrap();
-        for (task_id, task) in new_tasks.iter_mut() {
+        for (task_id, task) in &mut new_tasks {
             task.children.push("other_task".to_owned());
             task.parents.push("fancy_generator".to_owned());
             tasks.insert(task_id.clone(), task.clone());

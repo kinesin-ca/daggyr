@@ -140,6 +140,9 @@ pub struct Task {
     pub expansion_values: Vec<(String, String)>,
 
     #[serde(default)]
+    pub parameters: Parameters,
+
+    #[serde(default)]
     pub task_type: TaskType,
 
     #[serde(default)]
