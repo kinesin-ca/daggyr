@@ -1,14 +1,14 @@
 {
   "tags": { "user": "myself" },
   "parameters": {
-    "{{DATE}}": [ "2022-01-01", "2022-01-02" ]
+    "DATE": [ "2022-01-01", "2022-01-02" ]
   },
   "tasks": {
     "a": {
       "details": {
-        "command": ["echo", "{{DATE}}"],
+        "command": ["echo", "DATE"],
         "environment": {
-          "TEST_ENV": "{{DATE}}"
+          "TEST_ENV": "DATE"
         },
         "resources": {
           "cores": 1,
