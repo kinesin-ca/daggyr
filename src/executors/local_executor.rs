@@ -1,6 +1,6 @@
-use super::*;
-use crate::structs::*;
-use crate::utilities::*;
+use super::{ExecutorMessage, Result, RunnerMessage, TrackerMessage};
+use crate::structs::{ExpansionValues, Parameters, RunID, State, Task, TaskAttempt, TaskID};
+use crate::utilities::{apply_vars, find_applicable_vars, generate_interpolation_sets};
 use chrono::prelude::*;
 use futures::stream::futures_unordered::FuturesUnordered;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ struct LocalTaskDetail {
 
     /// Timeout in seconds
     #[serde(default)]
-    timeout: i64,
+    timeout: u64,
 }
 
 fn get_details(details: serde_json::Value) -> Result<LocalTaskDetail, serde_json::Error> {
@@ -37,11 +37,11 @@ fn get_task_details(task: &Task) -> Result<LocalTaskDetail, serde_json::Error> {
     get_details(task.details.clone())
 }
 
-async fn validate_tasks(tasks: Vec<Task>) -> Result<(), Vec<String>> {
+fn validate_tasks(tasks: &[Task]) -> Result<(), Vec<String>> {
     let mut errors = Vec::<String>::new();
     for (i, task) in tasks.iter().enumerate() {
-        if let Err(err) = get_task_details(&task) {
-            errors.push(format!("[Task {}]: {}\n", i, err))
+        if let Err(err) = get_task_details(task) {
+            errors.push(format!("[Task {}]: {}\n", i, err));
         }
     }
 
@@ -52,10 +52,12 @@ async fn validate_tasks(tasks: Vec<Task>) -> Result<(), Vec<String>> {
     }
 }
 
-async fn expand_task_details(
+/// # Errors
+/// Will return `Err` if the task details are missing required members
+pub fn expand_task_details(
     details: serde_json::Value,
-    parameters: Parameters,
-) -> Result<Vec<(serde_json::Value, Vec<(String, String)>)>> {
+    parameters: &Parameters,
+) -> Result<Vec<(serde_json::Value, ExpansionValues)>> {
     let mut expanded_tasks = Vec::new();
 
     let template = get_details(details.clone())?;
@@ -79,7 +81,7 @@ async fn expand_task_details(
         expanded_tasks.push((details, Vec::new()));
     } else {
         // Build out the interpolation sets
-        let interpolation_sets = generate_interpolation_sets(&parameters, &vars);
+        let interpolation_sets = generate_interpolation_sets(parameters, &vars);
 
         let new_cmds = apply_vars(&template.command, &interpolation_sets);
         let new_envs = apply_vars(&env_values, &interpolation_sets);
@@ -95,7 +97,7 @@ async fn expand_task_details(
                 .cloned()
                 .zip(new_env_vals.iter().cloned())
                 .collect();
-            expanded_tasks.push((new_details, int_set))
+            expanded_tasks.push((new_details, int_set));
         }
     }
 
@@ -133,7 +135,7 @@ async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt
     // Generate a timeout message, if needed
     let (timeout_tx, mut timeout_rx) = oneshot::channel();
     if details.timeout > 0 {
-        let timeout = details.timeout as u64;
+        let timeout = details.timeout;
         tokio::spawn(async move {
             sleep(Duration::from_millis(1000 * timeout)).await;
             timeout_tx.send(()).unwrap_or(());
@@ -159,10 +161,7 @@ async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt
     attempt.succeeded = output.status.success();
     attempt.output = String::from_utf8_lossy(&stdout_reader.await.unwrap()).to_string();
     attempt.error = String::from_utf8_lossy(&stderr_reader.await.unwrap()).to_string();
-    attempt.exit_code = match output.status.code() {
-        Some(code) => code,
-        None => -1i32,
-    };
+    attempt.exit_code = output.status.code().unwrap_or(-1i32);
 
     attempt.stop_time = Utc::now();
     attempt
@@ -178,11 +177,11 @@ async fn start_local_executor(
     let mut running = FuturesUnordered::new();
 
     while let Some(msg) = exe_msgs.recv().await {
-        use ExecutorMessage::*;
+        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTasks};
         match msg {
             ValidateTasks { tasks, response } => {
                 tokio::spawn(async move {
-                    let result = validate_tasks(tasks).await;
+                    let result = validate_tasks(&tasks);
                     response.send(result).unwrap_or(());
                 });
             }
@@ -192,7 +191,7 @@ async fn start_local_executor(
                 response,
             } => {
                 tokio::spawn(async move {
-                    let result = expand_task_details(details, parameters).await;
+                    let result = expand_task_details(details, &parameters);
                     response.send(result).unwrap_or(());
                 });
             }
@@ -460,7 +459,7 @@ mod tests {
         noop_tracker::start(log_rx);
 
         let (exe_tx, exe_rx) = mpsc::unbounded_channel();
-        local_executor::start(10, exe_rx);
+        super::start(10, exe_rx);
 
         // Submit the task
         let (run_tx, mut run_rx) = mpsc::unbounded_channel();

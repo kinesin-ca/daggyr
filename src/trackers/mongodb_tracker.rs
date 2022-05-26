@@ -1,5 +1,9 @@
-use crate::messages::*;
-use crate::structs::*;
+use crate::messages::TrackerMessage;
+use crate::structs::{
+    DateTime, Deserialize, HashMap, HashSet, Parameters, RunID, RunRecord, RunSummary, RunTags,
+    Serialize, State, StateChange, Task, TaskAttempt, TaskID, TaskRecord, TaskSet, TaskSummary,
+    Utc,
+};
 use crate::Result;
 use mongodb::{
     bson, bson::doc, options::ClientOptions, options::FindOneAndUpdateOptions,
@@ -11,14 +15,17 @@ use futures::TryStreamExt;
 
 pub fn start(url: String, db_name: String, msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     tokio::spawn(async move {
-        start_mongodb_tracker(url, db_name, msgs).await;
+        start_tracker(url, db_name, msgs).await;
     });
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct MongoTask {
     #[serde(default)]
-    _id: TaskID,
+    _id: String,
+
+    #[serde(default)]
+    task_id: TaskID,
 
     #[serde(default)]
     run_id: RunID,
@@ -32,6 +39,8 @@ struct MongoRun {
     #[serde(default)]
     _id: RunID,
     #[serde(default)]
+    run_id: RunID,
+    #[serde(default)]
     tags: RunTags,
     #[serde(default)]
     parameters: Parameters,
@@ -42,7 +51,7 @@ struct MongoRun {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct MongoCounter {
     #[serde(default)]
-    _id: String,
+    name: String,
     #[serde(default)]
     value: usize,
 }
@@ -58,7 +67,7 @@ struct MongoTracker {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct MongoRunSummary {
-    _id: RunID,
+    run_id: RunID,
     state: State,
     tags: RunTags,
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
@@ -75,7 +84,8 @@ struct MongoTaskCount {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct MongoTaskState {
-    _id: TaskID,
+    run_id: RunID,
+    task_id: TaskID,
     state: State,
 }
 
@@ -113,7 +123,7 @@ impl MongoTracker {
         let result = self
             .counters
             .find_one_and_update(
-                doc! { "_id": key },
+                doc! { "name": key },
                 doc! {"$inc": { "value": bson::to_bson(&1usize).unwrap() }},
                 FindOneAndUpdateOptions::builder().upsert(true).build(),
             )
@@ -127,9 +137,10 @@ impl MongoTracker {
     }
 
     async fn create_run(&self, tags: RunTags, parameters: Parameters) -> Result<RunID> {
-        let run_id = self.inc_counter(&"run_id").await?;
+        let run_id = self.inc_counter("run_id").await?;
         let run = MongoRun {
             _id: run_id,
+            run_id,
             tags,
             parameters,
             state_changes: vec![StateChange::new(State::Queued)],
@@ -138,14 +149,15 @@ impl MongoTracker {
         Ok(run_id)
     }
 
-    async fn add_tasks(&self, tasks: TaskSet) -> Result<()> {
+    async fn add_tasks(&self, run_id: RunID, tasks: TaskSet) -> Result<()> {
         let records: Vec<MongoTask> = tasks
-            .iter()
+            .into_iter()
             .map(|(task_id, task)| {
                 let mut mtask = MongoTask {
-                    _id: task_id.clone(),
-                    run_id: task_id.run_id(),
-                    record: TaskRecord::new(task.clone()),
+                    _id: format!("{}|{}", run_id, task_id),
+                    task_id,
+                    run_id,
+                    record: TaskRecord::new(task),
                 };
                 mtask
                     .record
@@ -157,8 +169,10 @@ impl MongoTracker {
         self.tasks.insert_many(records, None).await?;
         Ok(())
     }
-    async fn update_task(&self, task_id: TaskID, task: Task) -> Result<()> {
-        let filter = doc! {"task_id": bson::to_bson(&task_id).unwrap()};
+    async fn update_task(&self, run_id: RunID, task_id: TaskID, task: Task) -> Result<()> {
+        let filter = doc! {"task_id": bson::to_bson(&task_id)?,
+                           "run_id": bson::to_bson(&run_id)?
+        };
         let update = doc! {
             "$set": {
                 "record.task": bson::to_bson(&task)?
@@ -169,7 +183,7 @@ impl MongoTracker {
     }
     async fn update_state(&self, run_id: RunID, state: State) -> Result<()> {
         let new_state = StateChange::new(state);
-        let filter = doc! {"_id": bson::to_bson(&run_id)? };
+        let filter = doc! {"run_id": bson::to_bson(&run_id)? };
         let update = doc! {
             "$push": {
                 "state_changes": bson::to_bson(&new_state)?
@@ -179,9 +193,12 @@ impl MongoTracker {
         Ok(())
     }
 
-    async fn update_task_state(&self, task_id: TaskID, state: State) -> Result<()> {
+    async fn update_task_state(&self, run_id: RunID, task_id: TaskID, state: State) -> Result<()> {
         let new_state = StateChange::new(state);
-        let filter = doc! {"task_id": bson::to_bson(&task_id)? };
+        let filter = doc! {
+            "task_id": bson::to_bson(&task_id)?,
+            "run_id": bson::to_bson(&run_id)?,
+        };
         let update = doc! {
             "$push": {
                 "record.state_changes": bson::to_bson(&new_state)?
@@ -190,8 +207,16 @@ impl MongoTracker {
         self.tasks.update_one(filter, update, None).await?;
         Ok(())
     }
-    async fn log_task_attempt(&self, task_id: TaskID, attempt: TaskAttempt) -> Result<()> {
-        let filter = doc! {"task_id": bson::to_bson(&task_id)? };
+    async fn log_task_attempt(
+        &self,
+        run_id: RunID,
+        task_id: TaskID,
+        attempt: TaskAttempt,
+    ) -> Result<()> {
+        let filter = doc! {
+            "task_id": bson::to_bson(&task_id)?,
+            "run_id": bson::to_bson(&run_id)?,
+        };
         let update = doc! {
             "$push": {
                 "record.attempts": bson::to_bson(&attempt)?
@@ -257,14 +282,13 @@ impl MongoTracker {
             },
             doc! {
               "$addFields": {
-                "run_id": "$_id",
                 "state": "$last_state.state",
                 "start_time": "$first_state.datetime",
               }
             },
             doc! {
               "$project": {
-                "_id": 1i32,
+                "run_id": 1i32,
                 "state": 1i32,
                 "tags": 1i32,
                 "start_time": 1i32,
@@ -282,7 +306,7 @@ impl MongoTracker {
                     vec![
                         doc! {
                             "$match": {
-                                "run_id": bson::to_bson(&run._id).unwrap()
+                                "run_id": bson::to_bson(&run.run_id).unwrap()
                             }
                         },
                         // Get the last state
@@ -295,7 +319,7 @@ impl MongoTracker {
                         },
                         doc! {
                             "$group": {
-                                "_id": "$last_state.state",
+                                "_id": { "$max": "$last_state.state" },
                                 "count": { "$sum": 1i32 },
                                 "last_update": { "$max": "$last_state.datetime" }
                             }
@@ -309,7 +333,6 @@ impl MongoTracker {
             let mut task_states = HashMap::new();
             let mut last_update_time = chrono::MIN_DATETIME;
             while let Some(bson_tc) = tc_cursor.try_next().await? {
-                // if bson_tc.is_null("_id") { continue; }
                 let tc: MongoTaskCount = bson::from_document(bson_tc)?;
                 if last_update_time < tc.last_update {
                     last_update_time = tc.last_update;
@@ -318,7 +341,7 @@ impl MongoTracker {
             }
 
             runrecords.push(RunSummary {
-                run_id: run._id,
+                run_id: run.run_id,
                 tags: run.tags,
                 state: run.state,
                 start_time: run.start_time,
@@ -331,7 +354,7 @@ impl MongoTracker {
     }
 
     async fn get_run(&self, run_id: RunID) -> Result<RunRecord> {
-        let filter = doc! {"_id": bson::to_bson(&run_id)? };
+        let filter = doc! {"run_id": bson::to_bson(&run_id)? };
         if let Some(run) = self.runs.find_one(filter, None).await? {
             let mut tasks = HashMap::new();
             let mut cursor = self
@@ -340,7 +363,7 @@ impl MongoTracker {
                 .await?;
 
             while let Some(mtask) = cursor.try_next().await? {
-                tasks.insert(mtask._id.clone(), mtask.record.clone());
+                tasks.insert(mtask.task_id.clone(), mtask.record.clone());
             }
             Ok(RunRecord {
                 tags: run.tags,
@@ -354,7 +377,7 @@ impl MongoTracker {
     }
 
     async fn get_state(&self, run_id: RunID) -> Result<StateChange> {
-        let filter = doc! {"_id": bson::to_bson(&run_id).unwrap() };
+        let filter = doc! {"run_id": bson::to_bson(&run_id).unwrap() };
         let options = FindOneOptions::builder()
             .projection(doc! { "state_changes": 1u32})
             .build();
@@ -366,7 +389,7 @@ impl MongoTracker {
     }
 
     async fn get_state_updates(&self, run_id: RunID) -> Result<Vec<StateChange>> {
-        let filter = doc! {"_id": bson::to_bson(&run_id).unwrap() };
+        let filter = doc! {"run_id": bson::to_bson(&run_id).unwrap() };
         let options = FindOneOptions::builder()
             .projection(doc! { "state_changes": 1u32})
             .build();
@@ -385,7 +408,7 @@ impl MongoTracker {
                 vec![
                     doc! { "$match": { "run_id": bson::to_bson(&run_id).unwrap() } },
                     doc! { "$addFields": { "state": { "$last": "$record.state_changes.state" } } },
-                    doc! { "$project": { "_id": 1u32, "state": 1u32 } },
+                    doc! { "$project": { "run_id": 1u32, "task_id": 1u32, "state": 1u32 } },
                 ],
                 None,
             )
@@ -393,7 +416,7 @@ impl MongoTracker {
         while let Some(bson_tc) = tc_cursor.try_next().await? {
             let tc: MongoTaskState = bson::from_document(bson_tc)?;
             task_states.push(TaskSummary {
-                task_id: tc._id,
+                task_id: tc.task_id,
                 state: tc.state,
             });
         }
@@ -408,15 +431,21 @@ impl MongoTracker {
             .await?;
 
         while let Some(mtask) = tc_cursor.try_next().await? {
-            tasks.insert(mtask._id, mtask.record);
+            tasks.insert(mtask.task_id, mtask.record);
         }
         Ok(tasks)
     }
 
-    async fn get_task(&self, task_id: TaskID) -> Result<TaskRecord> {
+    async fn get_task(&self, run_id: RunID, task_id: TaskID) -> Result<TaskRecord> {
         let result = self
             .tasks
-            .find_one(doc! { "_id": bson::to_bson(&task_id).unwrap() }, None)
+            .find_one(
+                doc! {
+                    "task_id": bson::to_bson(&task_id)?,
+                    "run_id": bson::to_bson(&run_id)?,
+                },
+                None,
+            )
             .await?;
         match result {
             Some(mtask) => Ok(mtask.record),
@@ -425,7 +454,7 @@ impl MongoTracker {
     }
 }
 
-pub async fn start_mongodb_tracker(
+pub async fn start_tracker(
     conn: String,
     db_name: String,
     mut msgs: mpsc::UnboundedReceiver<TrackerMessage>,
@@ -450,14 +479,20 @@ pub async fn start_mongodb_tracker(
                 });
             }
             AddTasks {
-                tasks, response, ..
+                run_id,
+                tasks,
+                response,
+                ..
             } => {
                 let t = tracker.clone();
                 tokio::spawn(async move {
-                    response.send(t.add_tasks(tasks).await).unwrap_or(());
+                    response
+                        .send(t.add_tasks(run_id, tasks).await)
+                        .unwrap_or(());
                 });
             }
             UpdateTask {
+                run_id,
                 task_id,
                 task,
                 response,
@@ -465,7 +500,7 @@ pub async fn start_mongodb_tracker(
                 let t = tracker.clone();
                 tokio::spawn(async move {
                     response
-                        .send(t.update_task(task_id.clone(), task.clone()).await)
+                        .send(t.update_task(run_id, task_id, task).await)
                         .unwrap_or(());
                 });
             }
@@ -482,6 +517,7 @@ pub async fn start_mongodb_tracker(
                 });
             }
             UpdateTaskState {
+                run_id,
                 task_id,
                 state,
                 response,
@@ -489,11 +525,12 @@ pub async fn start_mongodb_tracker(
                 let t = tracker.clone();
                 tokio::spawn(async move {
                     response
-                        .send(t.update_task_state(task_id.clone(), state).await)
+                        .send(t.update_task_state(run_id, task_id, state).await)
                         .unwrap_or(());
                 });
             }
             LogTaskAttempt {
+                run_id,
                 task_id,
                 attempt,
                 response,
@@ -501,7 +538,7 @@ pub async fn start_mongodb_tracker(
                 let t = tracker.clone();
                 tokio::spawn(async move {
                     response
-                        .send(t.log_task_attempt(task_id.clone(), attempt.clone()).await)
+                        .send(t.log_task_attempt(run_id, task_id, attempt).await)
                         .unwrap_or(());
                 });
             }
@@ -516,13 +553,8 @@ pub async fn start_mongodb_tracker(
                 tokio::spawn(async move {
                     response
                         .send(
-                            t.get_runs(
-                                tags.clone(),
-                                states.clone(),
-                                start_time.clone(),
-                                end_time.clone(),
-                            )
-                            .await,
+                            t.get_runs(tags.clone(), states.clone(), start_time, end_time)
+                                .await,
                         )
                         .unwrap_or(());
                 });
@@ -561,11 +593,15 @@ pub async fn start_mongodb_tracker(
                     response.send(t.get_tasks(run_id).await).unwrap_or(());
                 });
             }
-            GetTask { task_id, response } => {
+            GetTask {
+                run_id,
+                task_id,
+                response,
+            } => {
                 let t = tracker.clone();
                 tokio::spawn(async move {
                     response
-                        .send(t.get_task(task_id.clone()).await)
+                        .send(t.get_task(run_id, task_id.clone()).await)
                         .unwrap_or(());
                 });
             }
@@ -645,7 +681,7 @@ mod tests {
         }
 
         // Adding some tasks
-        let tasks_spec: TaskSetSpec = serde_json::from_str(
+        let tasks: TaskSet = serde_json::from_str(
             r#"
             {
                 "simple_task": {
@@ -670,7 +706,6 @@ mod tests {
         )
         .unwrap();
 
-        let tasks = tasks_spec.to_task_set(run_id);
         {
             let (response, rx) = oneshot::channel();
             trx_tx
@@ -747,6 +782,7 @@ mod tests {
             let (tx, rx) = oneshot::channel();
             trx_tx
                 .send(GetTask {
+                    run_id,
                     task_id: task_id.clone(),
                     response: tx,
                 })

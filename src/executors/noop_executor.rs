@@ -1,10 +1,10 @@
-use super::*;
-use crate::structs::*;
+use super::{ExecutorMessage, RunnerMessage, TrackerMessage};
+use crate::structs::{State, TaskAttempt};
 use tokio::sync::{mpsc, oneshot};
 
 pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>) {
     while let Some(msg) = exe_msgs.recv().await {
-        use ExecutorMessage::*;
+        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTasks};
 
         match msg {
             ValidateTasks { response, .. } => response.send(Ok(())).unwrap_or(()),

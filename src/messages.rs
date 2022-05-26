@@ -1,6 +1,11 @@
-use crate::structs::*;
+use crate::structs::{
+    DateTime, Deserialize, ExpansionValues, HashMap, HashSet, Parameters, RunID, RunRecord,
+    RunSummary, RunTags, Serialize, State, StateChange, Task, TaskAttempt, TaskID, TaskRecord,
+    TaskSet, TaskSummary, Utc,
+};
 use crate::Result;
 use tokio::sync::{mpsc, oneshot};
+
 #[derive(Debug)]
 pub enum TrackerMessage {
     // Creation
@@ -118,7 +123,7 @@ pub enum ExecutorMessage {
     ExpandTaskDetails {
         details: serde_json::Value,
         parameters: Parameters,
-        response: oneshot::Sender<Result<Vec<(serde_json::Value, Vec<(String, String)>)>>>,
+        response: oneshot::Sender<Result<Vec<(serde_json::Value, ExpansionValues)>>>,
     },
     ExecuteTask {
         run_id: RunID,

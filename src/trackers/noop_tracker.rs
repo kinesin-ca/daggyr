@@ -1,15 +1,18 @@
-use crate::messages::*;
+use crate::messages::TrackerMessage;
 use tokio::sync::mpsc;
 
 pub fn start(msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     tokio::spawn(async move {
-        start_noop_tracker(msgs).await;
+        start_tracker(msgs).await;
     });
 }
 
-pub async fn start_noop_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
+pub async fn start_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     while let Some(msg) = msgs.recv().await {
-        use TrackerMessage::*;
+        use TrackerMessage::{
+            CreateRun, GetRun, GetRuns, GetState, GetStateUpdates, GetTask, GetTaskSummary,
+            GetTasks, Stop,
+        };
 
         match msg {
             CreateRun { response, .. } => {

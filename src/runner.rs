@@ -1,7 +1,9 @@
-use super::*;
+use super::Result;
 use crate::dag::DAG;
-use crate::messages::*;
-use crate::structs::*;
+use crate::messages::{ExecutorMessage, RunnerMessage, TrackerMessage};
+use crate::structs::{
+    Parameters, RunID, RunTags, State, Task, TaskAttempt, TaskID, TaskSet, TaskType,
+};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
 
@@ -123,8 +125,8 @@ impl Run {
 
                 for (details, expansion_values) in exp_tasks {
                     let interior = Task {
-                        details,
                         expansion_values,
+                        details,
                         ..template.clone()
                     };
 
@@ -189,7 +191,7 @@ impl Run {
 
         // Build the run
         let mut run = Run {
-            run_id: run_id,
+            run_id,
             tasks: TaskSet::new(),
             dag: DAG::new(),
             state: State::Running,
@@ -204,7 +206,7 @@ impl Run {
         // Update the task states
         let mut responses = Vec::new();
         for (task_id, state) in states {
-            run.dag.set_vertex_state(task_id.clone(), state)?;
+            run.dag.set_vertex_state(&task_id, state)?;
             let (response, rx) = oneshot::channel();
             run.tracker
                 .send(TrackerMessage::UpdateTaskState {
@@ -217,7 +219,7 @@ impl Run {
             responses.push(rx);
         }
         for rx in responses {
-            rx.await??
+            rx.await??;
         }
 
         run.update_state(State::Running).await?;
@@ -246,12 +248,12 @@ impl Run {
 
         // Insert edges
         for (task_id, task) in tasks.iter() {
-            for child in task.children.iter() {
+            for child in &task.children {
                 self.dag.add_edge(task_id, child)?;
             }
 
             // Same for parents, but in the other direction
-            for parent in task.parents.iter() {
+            for parent in &task.parents {
                 self.dag.add_edge(parent, task_id)?;
             }
         }
@@ -290,29 +292,25 @@ impl Run {
         }
 
         // Enqueue as many tasks as possible
-        loop {
-            if let Some(task_id) = self.dag.visit_next() {
-                match self.tasks.get(&task_id).unwrap().task_type {
-                    TaskType::Normal => {
-                        // Start the executor
-                        self.executor
-                            .send(ExecutorMessage::ExecuteTask {
-                                run_id: self.run_id,
-                                task_id: task_id.clone(),
-                                task: self.tasks.get(&task_id).unwrap().clone(),
-                                response: self.runner.clone(),
-                                tracker: self.tracker.clone(),
-                            })
-                            .unwrap_or(());
-                    }
-                    TaskType::Structural => {
-                        let mut attempt = TaskAttempt::new();
-                        attempt.succeeded = true;
-                        self.complete_task(&task_id, attempt).await.unwrap();
-                    }
+        while let Some(task_id) = self.dag.visit_next() {
+            match self.tasks.get(&task_id).unwrap().task_type {
+                TaskType::Normal => {
+                    // Start the executor
+                    self.executor
+                        .send(ExecutorMessage::ExecuteTask {
+                            run_id: self.run_id,
+                            task_id: task_id.clone(),
+                            task: self.tasks.get(&task_id).unwrap().clone(),
+                            response: self.runner.clone(),
+                            tracker: self.tracker.clone(),
+                        })
+                        .unwrap_or(());
                 }
-            } else {
-                break;
+                TaskType::Structural => {
+                    let mut attempt = TaskAttempt::new();
+                    attempt.succeeded = true;
+                    self.complete_task(&task_id, attempt).await.unwrap();
+                }
             }
         }
         self.state
@@ -325,7 +323,7 @@ impl Run {
         let gen_task = self.tasks.get(&task_id).unwrap();
         let children = gen_task.children.clone();
         let parents = vec![task_id.clone()];
-        for (_, task) in exp_tasks.iter_mut() {
+        for task in exp_tasks.values_mut() {
             task.children = children.clone();
             task.parents = parents.clone();
         }
@@ -347,7 +345,7 @@ impl Run {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        for vertex in self.dag.vertices.iter() {
+        for vertex in &self.dag.vertices {
             if vertex.state == State::Running {
                 let (response, cancel_rx) = oneshot::channel();
                 self.executor
@@ -387,9 +385,7 @@ impl Run {
             return Ok(());
         }
 
-        self.dag
-            .set_vertex_state(task_id.clone(), State::Killed)
-            .unwrap();
+        self.dag.set_vertex_state(&task_id, State::Killed).unwrap();
         let (response, rx) = oneshot::channel();
         self.tracker
             .send(TrackerMessage::UpdateTaskState {
@@ -417,12 +413,10 @@ impl Run {
 
         let mut new_state = if attempt.succeeded {
             State::Completed
+        } else if attempt.killed {
+            State::Killed
         } else {
-            if attempt.killed {
-                State::Killed
-            } else {
-                State::Errored
-            }
+            State::Errored
         };
 
         if new_state == State::Completed && self.tasks[task_id].is_generator {
@@ -456,7 +450,7 @@ impl Run {
         rx.await??;
 
         self.dag
-            .complete_visit(&task_id, new_state != State::Completed)?;
+            .complete_visit(task_id, new_state != State::Completed)?;
         Ok(())
     }
 }
@@ -477,7 +471,7 @@ async fn start_dag_runner(
     let mut runs = HashMap::<RunID, Run>::new();
 
     while let Some(msg) = msg_rx.recv().await {
-        use RunnerMessage::*;
+        use RunnerMessage::{ExecutionReport, Retry, Start, Stop, StopRun};
         match msg {
             Start {
                 tags,
@@ -519,23 +513,23 @@ async fn start_dag_runner(
                 executor,
                 response,
             } => {
-                if runs.contains_key(&run_id) {
-                    response
-                        .send(Err(anyhow!("Run ID is currently running, cannot retry.")))
-                        .unwrap_or(());
-                } else {
-                    match Run::from_tracker(run_id, tracker, executor, msg_tx.clone()).await {
-                        Ok(mut run) => {
-                            if run.run().await == State::Running {
-                                runs.insert(run_id, run);
+                //if let std::collections::hash_map::Entry::Vacant(e) = runs.entry(run_id) {
+                use std::collections::hash_map::Entry::{Occupied, Vacant};
+                let result = match runs.entry(run_id) {
+                    Occupied(_) => Err(anyhow!("Run ID is currently running, cannot retry.")),
+                    Vacant(e) => {
+                        match Run::from_tracker(run_id, tracker, executor, msg_tx.clone()).await {
+                            Ok(mut run) => {
+                                if run.run().await == State::Running {
+                                    e.insert(run);
+                                }
+                                Ok(())
                             }
-                            response.send(Ok(())).unwrap_or(());
-                        }
-                        Err(e) => {
-                            response.send(Err(e)).unwrap_or(());
+                            Err(e) => Err(e),
                         }
                     }
-                }
+                };
+                response.send(result).unwrap_or(());
             }
             ExecutionReport {
                 run_id,

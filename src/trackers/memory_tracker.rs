@@ -1,11 +1,18 @@
-use crate::messages::*;
-use crate::structs::*;
+use crate::messages::TrackerMessage;
+use crate::structs::{
+    DateTime, HashMap, HashSet, Parameters, RunID, RunRecord, RunSummary, RunTags, State,
+    StateChange, Task, TaskAttempt, TaskID, TaskRecord, TaskSet, TaskSummary, Utc,
+};
 use crate::Result;
 use tokio::sync::mpsc;
+use TrackerMessage::{
+    AddTasks, CreateRun, GetRun, GetRuns, GetState, GetStateUpdates, GetTask, GetTaskSummary,
+    GetTasks, LogTaskAttempt, Stop, UpdateState, UpdateTask, UpdateTaskState,
+};
 
 pub fn start(msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     tokio::spawn(async move {
-        start_memory_tracker(msgs).await;
+        start_tracker(msgs).await;
     });
 }
 
@@ -32,13 +39,14 @@ impl MemoryTracker {
         Ok(())
     }
 
-    fn create_run(&mut self, tags: RunTags, parameters: Parameters) -> Result<RunID> {
+    fn create_run(&mut self, tags: &RunTags, parameters: &Parameters) -> RunID {
         let run_id = self.runs.len();
-        self.runs.push(RunRecord::new(tags, parameters));
-        Ok(run_id)
+        self.runs
+            .push(RunRecord::new(tags.clone(), parameters.clone()));
+        run_id
     }
 
-    fn add_tasks(&mut self, run_id: RunID, tasks: TaskSet) -> Result<()> {
+    fn add_tasks(&mut self, run_id: RunID, tasks: &TaskSet) -> Result<()> {
         if run_id >= self.runs.len() {
             return Err(anyhow!(format!("No such run id: {}", run_id)));
         }
@@ -54,9 +62,9 @@ impl MemoryTracker {
         Ok(())
     }
 
-    fn update_task(&mut self, run_id: RunID, task_id: TaskID, task: Task) -> Result<()> {
-        self.range_checker(run_id, &task_id)?;
-        self.runs[run_id].tasks.get_mut(&task_id).unwrap().task = task;
+    fn update_task(&mut self, run_id: RunID, task_id: &TaskID, task: Task) -> Result<()> {
+        self.range_checker(run_id, task_id)?;
+        self.runs[run_id].tasks.get_mut(task_id).unwrap().task = task;
         Ok(())
     }
 
@@ -71,11 +79,11 @@ impl MemoryTracker {
         }
     }
 
-    fn update_task_state(&mut self, run_id: RunID, task_id: TaskID, state: State) -> Result<()> {
-        self.range_checker(run_id, &task_id)?;
+    fn update_task_state(&mut self, run_id: RunID, task_id: &TaskID, state: State) -> Result<()> {
+        self.range_checker(run_id, task_id)?;
         self.runs[run_id]
             .tasks
-            .get_mut(&task_id)
+            .get_mut(task_id)
             .unwrap()
             .state_changes
             .push(StateChange::new(state));
@@ -85,23 +93,23 @@ impl MemoryTracker {
     fn log_task_attempt(
         &mut self,
         run_id: RunID,
-        task_id: TaskID,
-        attempt: TaskAttempt,
+        task_id: &TaskID,
+        attempt: &TaskAttempt,
     ) -> Result<()> {
-        self.range_checker(run_id, &task_id)?;
+        self.range_checker(run_id, task_id)?;
         self.runs[run_id]
             .tasks
-            .get_mut(&task_id)
+            .get_mut(task_id)
             .unwrap()
             .attempts
-            .push(attempt);
+            .push(attempt.clone());
         Ok(())
     }
 
     fn get_runs(
         &self,
-        tags: Option<RunTags>,
-        states: Option<HashSet<State>>,
+        tags: &Option<RunTags>,
+        states: &Option<HashSet<State>>,
         start_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
     ) -> Vec<RunSummary> {
@@ -115,32 +123,16 @@ impl MemoryTracker {
                 }
             }
 
-            let run_state = run
-                .state_changes
-                .last()
-                .unwrap_or(&default_state)
-                .state
-                .clone();
+            let run_state = run.state_changes.last().unwrap_or(&default_state).state;
 
-            let run_start_time = run
-                .state_changes
-                .first()
-                .unwrap_or(&default_state)
-                .datetime
-                .clone();
+            let run_start_time = run.state_changes.first().unwrap_or(&default_state).datetime;
 
             let end_task_time = run
                 .tasks
                 .iter()
-                .map(|(_, task)| {
-                    task.state_changes
-                        .last()
-                        .unwrap_or(&default_state)
-                        .datetime
-                        .clone()
-                })
+                .map(|(_, task)| task.state_changes.last().unwrap_or(&default_state).datetime)
                 .max()
-                .unwrap_or(default_state.datetime.clone());
+                .unwrap_or(default_state.datetime);
 
             if let Some(filter_states) = states.clone() {
                 if !(filter_states.contains(&run_state)) {
@@ -164,13 +156,12 @@ impl MemoryTracker {
             record.start_time = run_start_time;
             record.last_update_time = end_task_time;
 
-            for (_, task_record) in run.tasks.iter() {
+            for task_record in run.tasks.values() {
                 let task_state = task_record
                     .state_changes
                     .last()
                     .unwrap_or(&default_state)
-                    .state
-                    .clone();
+                    .state;
 
                 let counter = record.task_states.entry(task_state).or_insert(0);
                 *counter += 1;
@@ -214,7 +205,7 @@ impl MemoryTracker {
         let default_state = StateChange::new(State::Queued);
         if run_id < self.runs.len() {
             let mut tasks = Vec::new();
-            for (tid, task_rec) in self.runs[run_id].tasks.iter() {
+            for (tid, task_rec) in &self.runs[run_id].tasks {
                 tasks.push(TaskSummary {
                     task_id: tid.clone(),
                     state: task_rec
@@ -238,18 +229,15 @@ impl MemoryTracker {
         }
     }
 
-    fn get_task(&self, run_id: RunID, task_id: TaskID) -> Result<TaskRecord> {
-        self.range_checker(run_id, &task_id)?;
-        Ok(self.runs[run_id].tasks.get(&task_id).unwrap().clone())
+    fn get_task(&self, run_id: RunID, task_id: &TaskID) -> Result<TaskRecord> {
+        self.range_checker(run_id, task_id)?;
+        Ok(self.runs[run_id].tasks.get(task_id).unwrap().clone())
     }
 }
 
-pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
+pub async fn start_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessage>) {
     let mut tracker = MemoryTracker::new();
-
     while let Some(msg) = msgs.recv().await {
-        use TrackerMessage::*;
-
         match msg {
             CreateRun {
                 tags,
@@ -257,7 +245,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response,
             } => {
                 response
-                    .send(tracker.create_run(tags.clone(), parameters.clone()))
+                    .send(Ok(tracker.create_run(&tags, &parameters)))
                     .unwrap_or(());
             }
             AddTasks {
@@ -266,7 +254,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response,
             } => {
                 response
-                    .send(tracker.add_tasks(run_id, tasks.clone()))
+                    .send(tracker.add_tasks(run_id, &tasks))
                     .unwrap_or(());
             }
             UpdateTask {
@@ -276,7 +264,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response,
             } => {
                 response
-                    .send(tracker.update_task(run_id, task_id.clone(), task.clone()))
+                    .send(tracker.update_task(run_id, &task_id, task.clone()))
                     .unwrap_or(());
             }
             UpdateState {
@@ -295,7 +283,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response,
             } => {
                 response
-                    .send(tracker.update_task_state(run_id, task_id.clone(), state))
+                    .send(tracker.update_task_state(run_id, &task_id, state))
                     .unwrap_or(());
             }
             LogTaskAttempt {
@@ -305,7 +293,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response,
             } => {
                 response
-                    .send(tracker.log_task_attempt(run_id, task_id.clone(), attempt.clone()))
+                    .send(tracker.log_task_attempt(run_id, &task_id, &attempt))
                     .unwrap_or(());
             }
             GetRuns {
@@ -316,12 +304,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response,
             } => {
                 response
-                    .send(Ok(tracker.get_runs(
-                        tags.clone(),
-                        states.clone(),
-                        start_time.clone(),
-                        end_time.clone(),
-                    )))
+                    .send(Ok(tracker.get_runs(&tags, &states, start_time, end_time)))
                     .unwrap_or(());
             }
             GetRun { run_id, response } => {
@@ -349,7 +332,7 @@ pub async fn start_memory_tracker(mut msgs: mpsc::UnboundedReceiver<TrackerMessa
                 response,
             } => {
                 response
-                    .send(tracker.get_task(run_id, task_id.clone()))
+                    .send(tracker.get_task(run_id, &task_id))
                     .unwrap_or(());
             }
             Stop {} => break,
@@ -365,9 +348,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_create() {
         let (trx_tx, trx_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            start_memory_tracker(trx_rx).await;
-        });
+        super::start(trx_rx);
 
         use TrackerMessage::*;
 
@@ -388,7 +369,7 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         trx_tx
             .send(GetState {
-                run_id: run_id,
+                run_id,
                 response: tx,
             })
             .unwrap();

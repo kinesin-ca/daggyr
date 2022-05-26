@@ -75,7 +75,7 @@ fn init(config_file: &str) -> GlobalConfig {
         GlobalConfigSpec::default()
     } else {
         let json = std::fs::read_to_string(config_file)
-            .expect(&format!("Unable to open {} for reading", config_file));
+            .unwrap_or_else(|_| panic!("Unable to open {} for reading", config_file));
         serde_json::from_str(&json).expect("Error parsing config json")
     };
 

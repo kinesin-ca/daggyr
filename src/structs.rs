@@ -9,16 +9,19 @@ pub type RunID = usize;
 pub type TaskID = String;
 
 pub type Parameters = HashMap<String, Vec<String>>;
+pub type ExpansionValues = Vec<(String, String)>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct RunTags(HashMap<String, String>);
 
 impl RunTags {
+    #[must_use]
     pub fn new() -> Self {
         RunTags(HashMap::new())
     }
 
     /// Returns true if
+    #[must_use]
     pub fn is_subset_of(&self, other: &RunTags) -> bool {
         for (k, v) in self.iter() {
             match other.get(k) {
@@ -32,7 +35,7 @@ impl RunTags {
                 }
             }
         }
-        return true;
+        true
     }
 }
 
@@ -66,16 +69,23 @@ impl DerefMut for TaskResources {
 }
 
 impl TaskResources {
+    #[must_use]
     pub fn new() -> Self {
         TaskResources(HashMap::new())
     }
 
+    #[must_use]
     pub fn can_satisfy(&self, requirements: &TaskResources) -> bool {
         requirements
             .iter()
             .all(|(k, v)| self.contains_key(k) && self[k] >= *v)
     }
 
+    /// Subtracts resources from available resources.
+    /// # Errors
+    /// Returns an `Err` if the requested resources cannot be fulfilled
+    /// # Panics
+    /// It doesn't, keys are checked for ahead-of-time
     pub fn sub(&mut self, resources: &TaskResources) -> Result<()> {
         if self.can_satisfy(resources) {
             for (k, v) in resources.iter() {
@@ -87,6 +97,8 @@ impl TaskResources {
         }
     }
 
+    /// # Panics
+    /// It doesn't, keys are checked for ahead-of-time
     pub fn add(&mut self, resources: &TaskResources) {
         for (k, v) in resources.iter() {
             if self.contains_key(k) {
@@ -149,10 +161,9 @@ pub struct Task {
 }
 
 impl Task {
+    #[must_use]
     pub fn new() -> Self {
-        Task {
-            ..Default::default()
-        }
+        Task::default()
     }
 }
 
@@ -172,7 +183,7 @@ fn test_task_deserialization() {
 
     // Parse the string of data into serde_json::Value.
     let task: Task = serde_json::from_str(data).unwrap();
-    assert_eq!(task.is_generator, false);
+    assert!(!task.is_generator);
     assert_eq!(task.max_retries, 0);
     assert_eq!(task.retries, 0);
     assert!(task.children.is_empty());
@@ -220,8 +231,8 @@ pub struct TaskAttempt {
     pub max_rss: u64,
 }
 
-impl TaskAttempt {
-    pub fn new() -> Self {
+impl Default for TaskAttempt {
+    fn default() -> Self {
         TaskAttempt {
             start_time: Utc::now(),
             stop_time: Utc::now(),
@@ -237,6 +248,13 @@ impl TaskAttempt {
     }
 }
 
+impl TaskAttempt {
+    #[must_use]
+    pub fn new() -> Self {
+        TaskAttempt::default()
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StateChange {
     #[cfg_attr(
@@ -247,11 +265,21 @@ pub struct StateChange {
     pub state: State,
 }
 
-impl StateChange {
-    pub fn new(state: State) -> Self {
+impl Default for StateChange {
+    fn default() -> Self {
         StateChange {
             datetime: Utc::now(),
-            state: state,
+            state: State::Queued,
+        }
+    }
+}
+
+impl StateChange {
+    #[must_use]
+    pub fn new(state: State) -> Self {
+        StateChange {
+            state,
+            ..StateChange::default()
         }
     }
 }
@@ -270,16 +298,16 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
+    #[must_use]
     pub fn new(task: Task) -> Self {
         TaskRecord {
-            task: task,
-            attempts: Vec::new(),
-            state_changes: Vec::new(),
+            task,
+            ..TaskRecord::default()
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct RunRecord {
     pub tags: RunTags,
     pub parameters: Parameters,
@@ -288,12 +316,13 @@ pub struct RunRecord {
 }
 
 impl RunRecord {
+    #[must_use]
     pub fn new(tags: RunTags, parameters: Parameters) -> Self {
         RunRecord {
             tags,
             parameters,
-            tasks: HashMap::new(),
             state_changes: vec![StateChange::new(State::Queued)],
+            ..RunRecord::default()
         }
     }
 }
@@ -308,15 +337,27 @@ pub struct RunSummary {
     pub task_states: HashMap<State, usize>,
 }
 
+impl Default for RunSummary {
+    fn default() -> Self {
+        RunSummary {
+            run_id: 0,
+            tags: RunTags::new(),
+            state: State::Queued,
+            start_time: Utc::now(),
+            last_update_time: Utc::now(),
+            task_states: HashMap::new(),
+        }
+    }
+}
+
 impl RunSummary {
+    #[must_use]
     pub fn new(run_id: RunID, tags: RunTags, state: State) -> Self {
         RunSummary {
             run_id,
             tags,
             state,
-            start_time: Utc::now(),
-            last_update_time: Utc::now(),
-            task_states: HashMap::new(),
+            ..RunSummary::default()
         }
     }
 }

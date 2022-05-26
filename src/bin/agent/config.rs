@@ -60,7 +60,7 @@ impl GlobalConfig {
         let def_res = default_resources();
         let cores = def_res.get("cores").unwrap();
 
-        let workers = spec.resources.get("cores").unwrap_or(&cores);
+        let workers = spec.resources.get("cores").unwrap_or(cores);
 
         let (executor, exe_rx) = mpsc::unbounded_channel();
         local_executor::start(*workers as usize, exe_rx);

@@ -1,6 +1,6 @@
-use crate::structs::Parameters;
+use crate::structs::{ExpansionValues, Parameters};
 use std::collections::HashSet;
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash};
 
 // Return the set of variables that are found in the template
 pub fn find_applicable_vars<S: AsRef<str> + Hash + Eq>(
@@ -10,7 +10,7 @@ pub fn find_applicable_vars<S: AsRef<str> + Hash + Eq>(
     let mut found = HashSet::new();
     for var in variables.iter() {
         for part in template.iter() {
-            if part.as_ref().find(var.as_ref()).is_some() {
+            if part.as_ref().contains(var.as_ref()) {
                 let val: String = var.as_ref().to_owned();
                 found.insert(val);
                 break;
@@ -22,7 +22,7 @@ pub fn find_applicable_vars<S: AsRef<str> + Hash + Eq>(
 }
 
 /// Produces the cartesian product of vectors
-fn cartesian_product<T: Clone>(input: &Vec<Vec<T>>) -> Vec<Vec<T>> {
+fn cartesian_product<T: Clone>(input: &[Vec<T>]) -> Vec<Vec<T>> {
     let mut it = input.iter();
     let mut cur = it
         .next()
@@ -34,7 +34,7 @@ fn cartesian_product<T: Clone>(input: &Vec<Vec<T>>) -> Vec<Vec<T>> {
     for next in it {
         let mut new_cur = Vec::new();
         for nt in next.iter() {
-            for c in cur.iter() {
+            for c in &cur {
                 let mut tmp = c.clone();
                 tmp.push(nt.clone());
                 new_cur.push(tmp);
@@ -46,17 +46,18 @@ fn cartesian_product<T: Clone>(input: &Vec<Vec<T>>) -> Vec<Vec<T>> {
     cur
 }
 
-pub fn generate_interpolation_sets(
+#[must_use]
+pub fn generate_interpolation_sets<S: BuildHasher>(
     variables: &Parameters,
-    subset: &HashSet<String>,
-) -> Vec<Vec<(String, String)>> {
+    subset: &HashSet<String, S>,
+) -> Vec<ExpansionValues> {
     let mut vals = Vec::new();
     let mut keys = Vec::new();
 
     // Extract the variables that apply
     for (k, v) in variables.iter() {
         if subset.contains(k) {
-            vals.push(v.to_vec());
+            vals.push(v.clone());
             keys.push(k);
         }
     }
@@ -68,7 +69,7 @@ pub fn generate_interpolation_sets(
             let mut v = x
                 .iter()
                 .zip(&keys)
-                .map(|(a, b)| (b.to_string(), a.to_string()))
+                .map(|(a, b)| ((*b).clone(), (*a).clone()))
                 .collect::<Vec<(String, String)>>();
             v.sort();
             v
@@ -77,10 +78,8 @@ pub fn generate_interpolation_sets(
 }
 
 // Flatten
-pub fn apply_vars(
-    template: &Vec<String>,
-    interpolation_sets: &Vec<Vec<(String, String)>>,
-) -> Vec<Vec<String>> {
+#[must_use]
+pub fn apply_vars(template: &[String], interpolation_sets: &[ExpansionValues]) -> Vec<Vec<String>> {
     // Generate the sets
     interpolation_sets
         .iter()
@@ -109,11 +108,7 @@ mod tests {
             vec!["ABCD".to_owned(), "EFGH".to_owned()],
         );
 
-        let keys = vars
-            .keys()
-            .into_iter()
-            .map(|x| String::from(x))
-            .collect::<Vec<String>>();
+        let keys = vars.keys().into_iter().cloned().collect::<Vec<String>>();
 
         let app_vars = find_applicable_vars(&input, &keys);
         let int_sets = generate_interpolation_sets(&vars, &app_vars);
@@ -144,11 +139,7 @@ mod tests {
             vec!["apple".to_owned(), "oranges".to_owned()],
         );
 
-        let keys = vars
-            .keys()
-            .into_iter()
-            .map(|x| String::from(x))
-            .collect::<Vec<String>>();
+        let keys = vars.keys().into_iter().cloned().collect::<Vec<String>>();
 
         let app_vars = find_applicable_vars(&input, &keys);
         let int_sets = generate_interpolation_sets(&vars, &app_vars);

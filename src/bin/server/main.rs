@@ -79,7 +79,7 @@ async fn get_runs(
         })
         .unwrap();
 
-    HttpResponse::Ok().json(rx.await.unwrap().unwrap_or(Vec::new()))
+    HttpResponse::Ok().json(rx.await.unwrap().unwrap_or_default())
 }
 
 async fn submit_run(spec: web::Json<RunSpec>, state: web::Data<AppState>) -> impl Responder {
@@ -297,7 +297,7 @@ fn init(config_file: &str) -> GlobalConfig {
         serde_json::from_str("{}").unwrap()
     } else {
         let json = std::fs::read_to_string(config_file)
-            .expect(&format!("Unable to open {} for reading", config_file));
+            .unwrap_or_else(|_| panic!("Unable to open {} for reading", config_file));
         serde_json::from_str(&json).expect("Error parsing config json")
     };
 

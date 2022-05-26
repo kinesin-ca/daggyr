@@ -22,9 +22,9 @@ impl Default for ServerConfig {
 
 fn default_workers() -> usize {
     let system = System::new_with_specifics(RefreshKind::new().with_cpu());
-    let workers = system.processors().len() - 2;
-    if workers <= 0 {
-        1
+    let workers = system.processors().len();
+    if workers > 2 {
+        workers - 2
     } else {
         workers
     }
@@ -38,7 +38,7 @@ pub enum PoolConfig {
         workers: usize,
     },
 
-    SSH {
+    Ssh {
         targets: Vec<daggyr::executors::ssh_executor::SSHTarget>,
     },
 
@@ -108,7 +108,7 @@ impl GlobalConfig {
                     local_executor::start(*workers, rx);
                 }
 
-                SSH { targets } => {
+                Ssh { targets } => {
                     ssh_executor::start(targets.clone(), rx);
                 }
 

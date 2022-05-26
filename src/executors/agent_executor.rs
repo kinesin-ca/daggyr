@@ -3,8 +3,8 @@
 
 extern crate serde_json;
 
-use super::*;
-use crate::structs::*;
+use super::{local_executor, ExecutorMessage, Result, RunnerMessage, TrackerMessage};
+use crate::structs::{HashMap, RunID, State, Task, TaskAttempt, TaskID, TaskResources};
 use futures::stream::futures_unordered::FuturesUnordered;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
@@ -17,6 +17,9 @@ pub struct AgentTarget {
 
     #[serde(default)]
     pub resources: TaskResources,
+
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 impl AgentTarget {
@@ -24,7 +27,27 @@ impl AgentTarget {
         AgentTarget {
             base_url,
             resources,
+            enabled: true,
         }
+    }
+
+    async fn refresh_resources(&mut self, client: &reqwest::Client) -> Result<()> {
+        let resource_url = format!("{}/resources", self.base_url);
+        let result = client.get(resource_url).send().await?;
+        if result.status() == reqwest::StatusCode::OK {
+            self.resources = result.json().await.unwrap();
+            Ok(())
+        } else {
+            self.enabled = false;
+            Err(anyhow!("Unable to query {}", self.base_url))
+        }
+    }
+
+    async fn ping(&mut self, client: &reqwest::Client) -> Result<()> {
+        let resource_url = format!("{}/ready", self.base_url);
+        let result = client.get(resource_url).send().await?;
+        self.enabled = result.status() == reqwest::StatusCode::OK;
+        Ok(())
     }
 }
 
@@ -51,13 +74,10 @@ fn get_task_details(task: &Task) -> Result<AgentTaskDetail, serde_json::Error> {
     serde_json::from_value::<AgentTaskDetail>(task.details.clone())
 }
 
-async fn validate_tasks(
-    tasks: &Vec<Task>,
-    max_capacities: &Vec<TaskResources>,
-) -> Result<(), Vec<String>> {
+fn validate_tasks(tasks: &[Task], max_capacities: &[TaskResources]) -> Result<(), Vec<String>> {
     let mut errors = Vec::<String>::new();
     for (i, task) in tasks.iter().enumerate() {
-        match get_task_details(&task) {
+        match get_task_details(task) {
             Ok(details) => {
                 if !max_capacities
                     .iter()
@@ -80,6 +100,60 @@ async fn validate_tasks(
     }
 }
 
+async fn submit_task(
+    run_id: RunID,
+    task_id: TaskID,
+    task: Task,
+    tracker: mpsc::UnboundedSender<TrackerMessage>,
+    base_url: String,
+    client: reqwest::Client,
+    response: mpsc::UnboundedSender<RunnerMessage>,
+) {
+    let (tx, rx) = oneshot::channel();
+    tracker
+        .send(TrackerMessage::UpdateTaskState {
+            run_id,
+            task_id: task_id.clone(),
+            state: State::Running,
+            response: tx,
+        })
+        .unwrap_or(());
+    rx.await.unwrap().expect("Unable to update task state");
+
+    let submit_url = format!("{}/{}/{}", base_url, run_id, task_id);
+    // TODO Handle the case where an agent stops responding
+    let result = client.post(submit_url).json(&task).send().await.unwrap();
+
+    if result.status() == reqwest::StatusCode::OK {
+        let mut attempt: TaskAttempt = result.json().await.unwrap();
+        attempt
+            .executor
+            .push(format!("Executed on agent at {}", base_url));
+        response
+            .send(RunnerMessage::ExecutionReport {
+                run_id,
+                task_id,
+                attempt,
+            })
+            .expect("Unable to send message to runner");
+    } else {
+        let mut attempt = TaskAttempt::new();
+        attempt.succeeded = false;
+        attempt
+            .executor
+            .push(format!("Unable to dispatch task to {}", base_url));
+        response
+            .send(RunnerMessage::ExecutionReport {
+                run_id,
+                task_id,
+                attempt,
+            })
+            .expect("Unable to send response");
+    }
+}
+
+// async fn select_target() -> Option<usize> {}
+
 struct RunningTask {
     resources: TaskResources,
     target_id: usize,
@@ -92,22 +166,8 @@ async fn start_agent_executor(
 ) {
     let client = reqwest::Client::new();
 
-    // pre-calculate the largest task we can dispatch
-    for target in targets.iter_mut() {
-        let resource_url = format!("{}/resources", target.base_url);
-        let result = client
-            .get(resource_url)
-            .send()
-            .await
-            .expect(&format!("Unable to query {}", target.base_url));
-        match result.status() {
-            reqwest::StatusCode::OK => {
-                target.resources = result.json().await.unwrap();
-            }
-            _ => {
-                panic!("Unable to query {}", target.base_url);
-            }
-        }
+    for target in &mut targets {
+        target.refresh_resources(&client).await.unwrap();
     }
 
     let max_caps: Vec<TaskResources> = targets.iter().map(|x| x.resources.clone()).collect();
@@ -121,13 +181,13 @@ async fn start_agent_executor(
     let mut running = FuturesUnordered::new();
 
     while let Some(msg) = exe_msgs.recv().await {
-        use ExecutorMessage::*;
+        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTasks};
         match msg {
             ValidateTasks { tasks, response } => {
                 let ltx = le_tx.clone();
                 let caps = max_caps.clone();
                 tokio::spawn(async move {
-                    let result = validate_tasks(&tasks, &caps).await;
+                    let result = validate_tasks(&tasks, &caps);
                     if result.is_err() {
                         response.send(result).unwrap_or(());
                     } else {
@@ -157,97 +217,40 @@ async fn start_agent_executor(
                 response,
                 tracker,
             } => {
-                match validate_tasks(&vec![task.clone()], &max_caps).await {
-                    Err(e) => {
-                        let mut attempt = TaskAttempt::new();
-                        attempt.succeeded = false;
-                        attempt.executor.extend(e);
-                        response
-                            .send(RunnerMessage::ExecutionReport {
-                                run_id,
-                                task_id,
-                                attempt,
-                            })
-                            .expect("Unable to send response");
-                    }
-                    Ok(()) => {
-                        let details = get_task_details(&task).unwrap();
-                        let resources = details.resources.clone();
+                let details = get_task_details(&task).unwrap();
+                let resources = details.resources.clone();
 
-                        // Wait until a target is available
-                        while !cur_caps.iter().any(|x| x.can_satisfy(&resources)) {
-                            let result: Result<(usize, TaskResources), tokio::task::JoinError> =
-                                running.next().await.unwrap();
+                // Wait until a target is available
+                while !cur_caps.iter().any(|x| x.can_satisfy(&resources)) {
+                    let result: Result<(usize, TaskResources), tokio::task::JoinError> =
+                        running.next().await.unwrap();
 
-                            let (tid, resources) = result.unwrap();
-                            cur_caps[tid].add(&resources);
-                        }
-
-                        let (tid, capacity) = cur_caps
-                            .iter_mut()
-                            .enumerate()
-                            .find(|(_, x)| x.can_satisfy(&details.resources))
-                            .unwrap();
-                        capacity.sub(&resources).unwrap();
-                        let base_url = targets[tid].base_url.clone();
-                        let submit_client = client.clone();
-                        running.push(tokio::spawn(async move {
-                            let (tx, rx) = oneshot::channel();
-                            tracker
-                                .send(TrackerMessage::UpdateTaskState {
-                                    run_id,
-                                    task_id: task_id.clone(),
-                                    state: State::Running,
-                                    response: tx,
-                                })
-                                .unwrap_or(());
-                            rx.await.unwrap().expect("Unable to update task state");
-
-                            let submit_url = format!("{}/{}/{}", base_url, run_id, task_id);
-                            // TODO Handle the case where an agent stops responding
-                            let result = submit_client
-                                .post(submit_url)
-                                .json(&task)
-                                .send()
-                                .await
-                                .unwrap();
-
-                            match result.status() {
-                                reqwest::StatusCode::OK => {
-                                    let mut attempt: TaskAttempt = result.json().await.unwrap();
-                                    attempt
-                                        .executor
-                                        .push(format!("Executed on agent at {}", base_url));
-                                    response
-                                        .send(RunnerMessage::ExecutionReport {
-                                            run_id,
-                                            task_id,
-                                            attempt,
-                                        })
-                                        .expect("Unable to send message to runner");
-                                }
-                                _ => {
-                                    let mut attempt = TaskAttempt::new();
-                                    attempt.succeeded = false;
-                                    attempt
-                                        .executor
-                                        .push(format!("Unable to dispatch task to {}", base_url));
-                                    response
-                                        .send(RunnerMessage::ExecutionReport {
-                                            run_id,
-                                            task_id,
-                                            attempt,
-                                        })
-                                        .expect("Unable to send response");
-                                }
-                            }
-
-                            (tid, resources)
-                        }));
-                    }
+                    let (tid, resources) = result.unwrap();
+                    cur_caps[tid].add(&resources);
                 }
-            }
 
+                let (tid, capacity) = cur_caps
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, x)| x.can_satisfy(&details.resources))
+                    .unwrap();
+                capacity.sub(&resources).unwrap();
+                let base_url = targets[tid].base_url.clone();
+                let submit_client = client.clone();
+                running.push(tokio::spawn(async move {
+                    submit_task(
+                        run_id,
+                        task_id,
+                        task,
+                        tracker,
+                        base_url,
+                        submit_client,
+                        response,
+                    )
+                    .await;
+                    (tid, resources)
+                }));
+            }
             msg @ StopTask { .. } => {
                 le_tx.send(msg).unwrap_or(());
             }
