@@ -21,7 +21,7 @@ async fn get_resources(data: web::Data<GlobalConfig>) -> impl Responder {
 
 async fn submit_task(
     path: web::Path<(RunID, TaskID)>,
-    task: web::Json<Task>,
+    details: web::Json<TaskDetails>,
     data: web::Data<GlobalConfig>,
 ) -> impl Responder {
     let (run_id, task_id) = path.into_inner();
@@ -33,7 +33,7 @@ async fn submit_task(
         .send(ExecutorMessage::ExecuteTask {
             run_id,
             task_id,
-            task: task.into_inner(),
+            details: details.into_inner(),
             tracker: trx,
             response,
         })

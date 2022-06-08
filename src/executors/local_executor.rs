@@ -1,5 +1,5 @@
 use super::{ExecutorMessage, Result, RunnerMessage, TrackerMessage};
-use crate::structs::{ExpansionValues, Parameters, RunID, State, Task, TaskAttempt, TaskID};
+use crate::structs::{ExpansionValues, Parameters, RunID, State, TaskAttempt, TaskID, TaskDetails};
 use crate::utilities::{apply_vars, find_applicable_vars, generate_interpolation_sets};
 use chrono::prelude::*;
 use futures::stream::futures_unordered::FuturesUnordered;
@@ -29,26 +29,15 @@ struct LocalTaskDetail {
     timeout: u64,
 }
 
-fn get_details(details: serde_json::Value) -> Result<LocalTaskDetail, serde_json::Error> {
-    serde_json::from_value::<LocalTaskDetail>(details)
+fn extract_details(details: &TaskDetails) -> Result<LocalTaskDetail, serde_json::Error> {
+    serde_json::from_value::<LocalTaskDetail>(details.clone())
 }
 
-fn get_task_details(task: &Task) -> Result<LocalTaskDetail, serde_json::Error> {
-    get_details(task.details.clone())
-}
-
-fn validate_tasks(tasks: &[Task]) -> Result<(), Vec<String>> {
-    let mut errors = Vec::<String>::new();
-    for (i, task) in tasks.iter().enumerate() {
-        if let Err(err) = get_task_details(task) {
-            errors.push(format!("[Task {}]: {}\n", i, err));
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(())
+fn validate_task(details: &TaskDetails) -> Result<()> {
+    if let Err(err) = extract_details(details) {
+        Err(anyhow!("{}", err))
     } else {
-        Err(errors)
+        Ok(())
     }
 }
 
@@ -60,7 +49,7 @@ pub fn expand_task_details(
 ) -> Result<Vec<(serde_json::Value, ExpansionValues)>> {
     let mut expanded_tasks = Vec::new();
 
-    let template = get_details(details.clone())?;
+    let template = extract_details(&details)?;
 
     let all_vars: Vec<String> = parameters.keys().into_iter().cloned().collect();
 
@@ -104,8 +93,8 @@ pub fn expand_task_details(
     Ok(expanded_tasks)
 }
 
-async fn run_task(task: Task, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt {
-    let details = get_task_details(&task).unwrap();
+async fn run_task(task: TaskDetails, mut stop_rx: oneshot::Receiver<()>) -> TaskAttempt {
+    let details = extract_details(&task).unwrap();
     let mut attempt = TaskAttempt::new();
     attempt.executor.push(format!("{:?}\n", details));
     let (program, args) = details.command.split_first().unwrap();
@@ -177,11 +166,11 @@ async fn start_local_executor(
     let mut running = FuturesUnordered::new();
 
     while let Some(msg) = exe_msgs.recv().await {
-        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTasks};
+        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTask};
         match msg {
-            ValidateTasks { tasks, response } => {
+            ValidateTask { details, response } => {
                 tokio::spawn(async move {
-                    let result = validate_tasks(&tasks);
+                    let result = validate_task(&details);
                     response.send(result).unwrap_or(());
                 });
             }
@@ -198,7 +187,7 @@ async fn start_local_executor(
             ExecuteTask {
                 run_id,
                 task_id,
-                task,
+                details,
                 response,
                 tracker,
             } => {
@@ -217,7 +206,7 @@ async fn start_local_executor(
                     })
                     .unwrap_or(());
                 running.push(tokio::spawn(async move {
-                    let attempt = run_task(task, rx).await;
+                    let attempt = run_task(details, rx).await;
                     response
                         .send(RunnerMessage::ExecutionReport {
                             run_id,
@@ -257,12 +246,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn test_basic_execution() {
-        let task: Task = serde_json::from_str(
+        let details: TaskDetails = serde_json::from_str(
             r#"
             {
-                "details": {
-                    "command": [ "/bin/echo", "hello", "world" ]
-                }
+                "command": [ "/bin/echo", "hello", "world" ]
             }"#,
         )
         .unwrap();
@@ -281,7 +268,7 @@ mod tests {
         tx.send(ExecutorMessage::ExecuteTask {
             run_id,
             task_id: task_id.clone(),
-            task: task,
+            details,
             response: run_tx,
             tracker: log_tx,
         })
@@ -309,12 +296,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn test_stop_execution() {
-        let task: Task = serde_json::from_str(
+        let details: TaskDetails = serde_json::from_str(
             r#"
             {
-                "details": {
-                    "command": [ "/bin/sleep", "60" ]
-                }
+                "command": [ "/bin/sleep", "60" ]
             }"#,
         )
         .unwrap();
@@ -333,7 +318,7 @@ mod tests {
         tx.send(ExecutorMessage::ExecuteTask {
             run_id,
             task_id: task_id.clone(),
-            task,
+            details,
             response: run_tx,
             tracker: log_tx,
         })
@@ -370,12 +355,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     async fn test_max_parallel_execution() {
-        let task: Task = serde_json::from_str(
+        let details: TaskDetails = serde_json::from_str(
             r#"
             {
-                "details": {
-                    "command": [ "/bin/sleep", "2" ]
-                }
+                "command": [ "/bin/sleep", "2" ]
             }"#,
         )
         .unwrap();
@@ -399,7 +382,7 @@ mod tests {
             tx.send(ExecutorMessage::ExecuteTask {
                 run_id,
                 task_id: ntid,
-                task: task.clone(),
+                details: details.clone(),
                 response: run_tx,
                 tracker: log_tx.clone(),
             })
@@ -442,12 +425,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     async fn test_large_ouput() {
-        let task: Task = serde_json::from_str(
+        let details: TaskDetails = serde_json::from_str(
             r#"
             {
-                "details": {
-                    "command": [ "/bin/dd", "if=/dev/urandom", "count=10", "bs=1024k" ]
-                }
+                "command": [ "/bin/dd", "if=/dev/urandom", "count=10", "bs=1024k" ]
             }"#,
         )
         .unwrap();
@@ -467,7 +448,7 @@ mod tests {
             .send(ExecutorMessage::ExecuteTask {
                 run_id,
                 task_id: task_id.clone(),
-                task: task.clone(),
+                details,
                 response: run_tx,
                 tracker: log_tx,
             })

@@ -345,16 +345,15 @@ mod tests {
     use super::*;
     use tokio::sync::oneshot;
 
+
     #[tokio::test]
     async fn test_memory_create() {
         let (trx_tx, trx_rx) = mpsc::unbounded_channel();
         super::start(trx_rx);
 
-        use TrackerMessage::*;
-
         let (tx, rx) = oneshot::channel();
         trx_tx
-            .send(CreateRun {
+            .send(TrackerMessage::CreateRun {
                 tags: RunTags::new(),
                 parameters: Parameters::new(),
                 response: tx,
@@ -368,7 +367,7 @@ mod tests {
 
         let (tx, rx) = oneshot::channel();
         trx_tx
-            .send(GetState {
+            .send(TrackerMessage::GetState {
                 run_id,
                 response: tx,
             })

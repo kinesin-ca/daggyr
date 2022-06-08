@@ -80,6 +80,9 @@ impl Run {
     }
 
     async fn expand_tasks(&self, tasks: TaskSet) -> Result<TaskSet> {
+        if self.parameters.is_empty() {
+            return Ok(tasks);
+        }
         let mut expanded_tasks = TaskSet::new();
         for (task_id, mut task) in tasks {
             let mut task_parameters = self.parameters.clone();
@@ -302,7 +305,7 @@ impl Run {
                         .send(ExecutorMessage::ExecuteTask {
                             run_id: self.run_id,
                             task_id: task_id.clone(),
-                            task: self.tasks.get(&task_id).unwrap().clone(),
+                            details: self.tasks.get(&task_id).unwrap().details.clone(),
                             response: self.runner.clone(),
                             tracker: self.tracker.clone(),
                         })
@@ -456,6 +459,8 @@ impl Run {
             })
             .unwrap();
         rx.await??;
+
+        // TODO implement retry logic here
 
         self.dag
             .complete_visit(task_id, new_state != State::Completed)?;

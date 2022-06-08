@@ -4,10 +4,10 @@ use tokio::sync::{mpsc, oneshot};
 
 pub async fn start_local_executor(mut exe_msgs: mpsc::UnboundedReceiver<ExecutorMessage>) {
     while let Some(msg) = exe_msgs.recv().await {
-        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTasks};
+        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTask};
 
         match msg {
-            ValidateTasks { response, .. } => response.send(Ok(())).unwrap_or(()),
+            ValidateTask { response, .. } => response.send(Ok(())).unwrap_or(()),
             ExpandTaskDetails {
                 details, response, ..
             } => response.send(Ok(vec![(details, Vec::new())])).unwrap_or(()),

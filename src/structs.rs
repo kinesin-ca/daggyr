@@ -7,6 +7,7 @@ use std::ops::{Deref, DerefMut};
 
 pub type RunID = usize;
 pub type TaskID = String;
+pub type TaskDetails = serde_json::Value;
 
 pub type Parameters = HashMap<String, Vec<String>>;
 pub type ExpansionValues = Vec<(String, String)>;

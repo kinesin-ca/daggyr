@@ -4,7 +4,7 @@
 extern crate serde_json;
 
 use super::{local_executor, ExecutorMessage, Result, RunnerMessage, TrackerMessage};
-use crate::structs::{HashMap, RunID, State, Task, TaskAttempt, TaskID, TaskResources};
+use crate::structs::{HashMap, RunID, State, TaskAttempt, TaskID, TaskResources, TaskDetails};
 use futures::stream::futures_unordered::FuturesUnordered;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
@@ -70,40 +70,26 @@ struct AgentTaskDetail {
     resources: TaskResources,
 }
 
-fn get_task_details(task: &Task) -> Result<AgentTaskDetail, serde_json::Error> {
-    serde_json::from_value::<AgentTaskDetail>(task.details.clone())
+fn extract_details(details: &TaskDetails) -> Result<AgentTaskDetail, serde_json::Error> {
+    serde_json::from_value::<AgentTaskDetail>(details.clone())
 }
 
-fn validate_tasks(tasks: &[Task], max_capacities: &[TaskResources]) -> Result<(), Vec<String>> {
-    let mut errors = Vec::<String>::new();
-    for (i, task) in tasks.iter().enumerate() {
-        match get_task_details(task) {
-            Ok(details) => {
-                if !max_capacities
-                    .iter()
-                    .any(|x| x.can_satisfy(&details.resources))
-                {
-                    errors.push(format!(
-                        "[Task {}]: No Agent target satisfies the required resources\n",
-                        i
-                    ));
-                }
-            }
-            Err(err) => errors.push(format!("[Task {}]: {}\n", i, err)),
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(())
+fn validate_task(details: &TaskDetails, max_capacities: &[TaskResources]) -> Result<()> {
+    let parsed = extract_details(details)?;
+    if !max_capacities
+        .iter()
+        .any(|x| x.can_satisfy(&parsed.resources))
+    {
+       Err(anyhow!("No Agent target satisfies the required resources"))
     } else {
-        Err(errors)
+        Ok(())
     }
 }
 
 async fn submit_task(
     run_id: RunID,
     task_id: TaskID,
-    task: Task,
+    details: TaskDetails,
     tracker: mpsc::UnboundedSender<TrackerMessage>,
     base_url: String,
     client: reqwest::Client,
@@ -122,7 +108,7 @@ async fn submit_task(
 
     let submit_url = format!("{}/{}/{}", base_url, run_id, task_id);
     // TODO Handle the case where an agent stops responding
-    let result = client.post(submit_url).json(&task).send().await.unwrap();
+    let result = client.post(submit_url).json(&details).send().await.unwrap();
 
     if result.status() == reqwest::StatusCode::OK {
         let mut attempt: TaskAttempt = result.json().await.unwrap();
@@ -181,17 +167,17 @@ async fn start_agent_executor(
     let mut running = FuturesUnordered::new();
 
     while let Some(msg) = exe_msgs.recv().await {
-        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTasks};
+        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTask};
         match msg {
-            ValidateTasks { tasks, response } => {
+            ValidateTask { details, response } => {
                 let ltx = le_tx.clone();
                 let caps = max_caps.clone();
                 tokio::spawn(async move {
-                    let result = validate_tasks(&tasks, &caps);
+                    let result = validate_task(&details, &caps);
                     if result.is_err() {
                         response.send(result).unwrap_or(());
                     } else {
-                        ltx.send(ValidateTasks { tasks, response }).unwrap_or(());
+                        ltx.send(ValidateTask { details, response }).unwrap_or(());
                     }
                 });
             }
@@ -213,12 +199,12 @@ async fn start_agent_executor(
             ExecuteTask {
                 run_id,
                 task_id,
-                task,
+                details,
                 response,
                 tracker,
             } => {
-                let details = get_task_details(&task).unwrap();
-                let resources = details.resources.clone();
+                let task = extract_details(&details).unwrap();
+                let resources = task.resources.clone();
 
                 // Wait until a target is available
                 while !cur_caps.iter().any(|x| x.can_satisfy(&resources)) {
@@ -232,7 +218,7 @@ async fn start_agent_executor(
                 let (tid, capacity) = cur_caps
                     .iter_mut()
                     .enumerate()
-                    .find(|(_, x)| x.can_satisfy(&details.resources))
+                    .find(|(_, x)| x.can_satisfy(&task.resources))
                     .unwrap();
                 capacity.sub(&resources).unwrap();
                 let base_url = targets[tid].base_url.clone();
@@ -241,7 +227,7 @@ async fn start_agent_executor(
                     submit_task(
                         run_id,
                         task_id,
-                        task,
+                        details,
                         tracker,
                         base_url,
                         submit_client,

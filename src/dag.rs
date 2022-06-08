@@ -25,6 +25,8 @@ impl<T> Vertex<T> {
     }
 }
 
+// A visitable [directed-acyclic graph](https://en.wikipedia.org/wiki/Directed_acyclic_graph) structure
+// with user-defined keys.
 #[derive(Debug, Default)]
 pub struct DAG<T: Hash + PartialEq + Eq + Clone + Debug> {
     pub vertices: Vec<Vertex<T>>,

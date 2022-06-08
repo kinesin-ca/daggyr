@@ -4,7 +4,7 @@
 extern crate serde_json;
 
 use super::{local_executor, ExecutorMessage, Result, RunnerMessage};
-use crate::structs::{HashMap, Task, TaskResources};
+use crate::structs::{HashMap, TaskResources, TaskDetails};
 use futures::stream::futures_unordered::FuturesUnordered;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -59,8 +59,8 @@ struct SSHTaskDetail {
     resources: TaskResources,
 }
 
-fn get_task_details(task: &Task) -> Result<SSHTaskDetail, serde_json::Error> {
-    serde_json::from_value::<SSHTaskDetail>(task.details.clone())
+fn extract_details(details: &TaskDetails) -> Result<SSHTaskDetail, serde_json::Error> {
+    serde_json::from_value::<SSHTaskDetail>(details.clone())
 }
 
 fn shell_escape_char(ch: char) -> Option<&'static str> {
@@ -85,9 +85,9 @@ fn shell_escape(input: &str) -> String {
     output
 }
 
-fn sshify_task(mut task: Task, target: &SSHTarget) -> Result<Task> {
+fn sshify_task(mut details: TaskDetails, target: &SSHTarget) -> Result<TaskDetails> {
     let mut new_command = vec!["ssh".to_owned()];
-    let details = get_task_details(&task)?;
+    let parsed = extract_details(&details)?;
 
     // Handle the user and host
     if let Some(user) = &target.user {
@@ -109,7 +109,7 @@ fn sshify_task(mut task: Task, target: &SSHTarget) -> Result<Task> {
     }
 
     // Add the environment
-    for (k, v) in &details.environment {
+    for (k, v) in &parsed.environment {
         new_command.push("export".to_owned());
 
         // TODO -- this needs to be quoted properly
@@ -117,36 +117,26 @@ fn sshify_task(mut task: Task, target: &SSHTarget) -> Result<Task> {
     }
 
     // Copy in the remaining
-    new_command.extend(details.command);
+    new_command.extend(parsed.command);
 
-    *task.details.get_mut("command").unwrap() = json!(new_command);
+    *details.get_mut("command").unwrap() = json!(new_command);
 
-    Ok(task)
+    Ok(details)
 }
 
-fn validate_tasks(tasks: &[Task], max_capacities: &[TaskResources]) -> Result<(), Vec<String>> {
-    let mut errors = Vec::<String>::new();
-    for (i, task) in tasks.iter().enumerate() {
-        match get_task_details(task) {
-            Ok(details) => {
-                if !max_capacities
-                    .iter()
-                    .any(|x| x.can_satisfy(&details.resources))
-                {
-                    errors.push(format!(
-                        "[Task {}]: No SSH target satisfies the required resources\n",
-                        i
-                    ));
-                }
+fn validate_task(details: &TaskDetails, max_capacities: &[TaskResources]) -> Result<()> {
+    match extract_details(details) {
+        Ok(details) => {
+            if !max_capacities
+                .iter()
+                .any(|x| x.can_satisfy(&details.resources))
+            {
+                Err(anyhow!( "No SSH target satisfies the required resources"))
+            } else {
+                Ok(())
             }
-            Err(err) => errors.push(format!("[Task {}]: {}\n", i, err)),
         }
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
+        Err(err) => Err(anyhow!(err)),
     }
 }
 
@@ -179,17 +169,17 @@ async fn start_ssh_executor(
     let mut running = FuturesUnordered::new();
 
     while let Some(msg) = exe_msgs.recv().await {
-        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTasks};
+        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTask};
         match msg {
-            ValidateTasks { tasks, response } => {
+            ValidateTask { details, response } => {
                 let ltx = le_tx.clone();
                 let caps = max_caps.clone();
                 tokio::spawn(async move {
-                    let result = validate_tasks(&tasks, &caps);
+                    let result = validate_task(&details, &caps);
                     if result.is_err() {
                         response.send(result).unwrap_or(());
                     } else {
-                        ltx.send(ValidateTasks { tasks, response }).unwrap_or(());
+                        ltx.send(ValidateTask { details, response }).unwrap_or(());
                     }
                 });
             }
@@ -211,12 +201,12 @@ async fn start_ssh_executor(
             ExecuteTask {
                 run_id,
                 task_id,
-                task,
+                details,
                 response,
                 tracker,
             } => {
-                let details = get_task_details(&task).unwrap();
-                let resources = details.resources.clone();
+                let parsed = extract_details(&details).unwrap();
+                let resources = parsed.resources.clone();
 
                 // Wait until a target is available
                 while !cur_caps.iter().any(|x| x.can_satisfy(&resources)) {
@@ -230,17 +220,17 @@ async fn start_ssh_executor(
                 let (tid, capacity) = cur_caps
                     .iter_mut()
                     .enumerate()
-                    .find(|(_, x)| x.can_satisfy(&details.resources))
+                    .find(|(_, x)| x.can_satisfy(&parsed.resources))
                     .unwrap();
                 capacity.sub(&resources).unwrap();
-                let ssh_task = sshify_task(task, &targets[tid]).unwrap();
+                let ssh_task = sshify_task(details, &targets[tid]).unwrap();
                 let ltx = le_tx.clone();
                 running.push(tokio::spawn(async move {
                     let (rtx, mut rrx) = mpsc::unbounded_channel();
                     ltx.send(ExecuteTask {
                         run_id,
                         task_id,
-                        task: ssh_task,
+                        details: ssh_task,
                         response: rtx,
                         tracker,
                     })

@@ -97,14 +97,16 @@ async fn submit_run(spec: web::Json<RunSpec>, state: web::Data<AppState>) -> imp
     let tasks: Vec<Task> = spec.tasks.iter().map(|(_, v)| v).cloned().collect();
 
     // Validate the tasks
-    let (response, rx) = oneshot::channel();
-    state.config.pools[&pool]
-        .send(ExecutorMessage::ValidateTasks { tasks, response })
-        .expect("Unable to contact executor");
-    if let Err(e) = rx.await.unwrap() {
-        return HttpResponse::BadRequest().json(SimpleError {
-            error: format!("Invalid tasks for pool {}: {:?}", pool, e),
-        });
+    for task in &tasks {
+        let (response, rx) = oneshot::channel();
+        state.config.pools[&pool]
+            .send(ExecutorMessage::ValidateTask { details: task.details.clone(), response })
+            .expect("Unable to contact executor");
+        if let Err(e) = rx.await.unwrap() {
+            return HttpResponse::BadRequest().json(SimpleError {
+                error: format!("Invalid tasks for pool {}: {:?}", pool, e),
+            });
+        }
     }
 
     let (tx, rx) = oneshot::channel();
