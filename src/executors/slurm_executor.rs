@@ -104,8 +104,8 @@ impl SlurmSubmitJob {
     }
 }
 
-fn get_task_details(task: &Task) -> Result<SlurmTaskDetail, serde_json::Error> {
-    serde_json::from_value::<SlurmTaskDetail>(task.details.clone())
+fn extract_details(details: &TaskDetails) -> Result<SlurmTaskDetail, serde_json::Error> {
+    serde_json::from_value::<SlurmTaskDetail>(details.clone())
 }
 
 /// Contains the information required to monitor and resubmit failed
@@ -119,7 +119,7 @@ struct SlurmJob {
     jwt_token: String,
     response: mpsc::UnboundedSender<RunnerMessage>,
     run_id: RunID,
-    task: Task,
+    details: TaskDetails,
     task_name: String,
     killed: bool,
 }
@@ -129,16 +129,16 @@ async fn submit_slurm_job(
     base_url: &str,
     client: &reqwest::Client,
     task_id: &TaskID,
-    task: &Task,
+    details: &TaskDetails,
 ) -> Result<u64> {
-    let details = get_task_details(task).unwrap();
+    let parsed = extract_details(details).unwrap();
 
-    let job = SlurmSubmitJob::new(task_id.to_string(), &details);
+    let job = SlurmSubmitJob::new(task_id.to_string(), &parsed);
 
     let result = client
         .post(base_url.to_owned() + "/job/submit")
-        .header("X-SLURM-USER-NAME", details.user.clone())
-        .header("X-SLURM-USER-TOKEN", details.jwt_token.clone())
+        .header("X-SLURM-USER-NAME", parsed.user.clone())
+        .header("X-SLURM-USER-TOKEN", parsed.jwt_token.clone())
         .json(&job)
         .send()
         .await?;
@@ -176,14 +176,14 @@ async fn watch_job(
     slurm_id: u64,
     run_id: RunID,
     task_id: TaskID,
-    task: Task,
+    details: TaskDetails,
     base_url: String,
     response: mpsc::UnboundedSender<RunnerMessage>,
     kill_signal: oneshot::Receiver<JobEvent>,
 ) {
     let start_time = Utc::now();
     let client = reqwest::Client::new();
-    let details = get_task_details(&task).unwrap();
+    let parsed = extract_details(&details).unwrap();
     let mut signals = FuturesUnordered::new();
     signals.push(kill_signal);
     let mut killed = false;
@@ -204,8 +204,8 @@ async fn watch_job(
                     let url = format!("{}/job/{}", base_url, slurm_id);
                     let response = client
                         .delete(url)
-                        .header("X-SLURM-USER-NAME", details.user.clone())
-                        .header("X-SLURM-USER-TOKEN", details.jwt_token.clone())
+                        .header("X-SLURM-USER-NAME", parsed.user.clone())
+                        .header("X-SLURM-USER-TOKEN", parsed.jwt_token.clone())
                         .send()
                         .await
                         .unwrap();
@@ -217,8 +217,8 @@ async fn watch_job(
                     let url = format!("{}/job/{}", base_url, slurm_id);
                     let result = client
                         .get(url)
-                        .header("X-SLURM-USER-NAME", details.user.clone())
-                        .header("X-SLURM-USER-TOKEN", details.jwt_token.clone())
+                        .header("X-SLURM-USER-NAME", parsed.user.clone())
+                        .header("X-SLURM-USER-TOKEN", parsed.jwt_token.clone())
                         .send()
                         .await
                         .unwrap();
@@ -321,22 +321,15 @@ pub async fn start_executor(base_url: String, mut msgs: mpsc::UnboundedReceiver<
     let client = reqwest::Client::new();
 
     while let Some(msg) = msgs.recv().await {
-        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTasks};
+        use ExecutorMessage::{ExecuteTask, ExpandTaskDetails, Stop, StopTask, ValidateTask};
         match msg {
-            ValidateTasks { tasks, response } => {
-                let mut errors = Vec::new();
-                for (i, task) in tasks.iter().enumerate() {
-                    if let Err(err) = get_task_details(task) {
-                        errors.push(format!("[Task {}]: {}\n", i, err));
-                    }
-                }
-                response
-                    .send(if errors.is_empty() {
-                        Ok(())
-                    } else {
-                        Err(errors)
-                    })
-                    .unwrap_or(());
+            ValidateTask { details, response } => {
+                let res = if let Err(e) = extract_details(&details) {
+                    Err(anyhow!(e))
+                } else {
+                    Ok(())
+                };
+                response.send(res).unwrap_or(());
             }
             ExpandTaskDetails {
                 details,
@@ -350,17 +343,17 @@ pub async fn start_executor(base_url: String, mut msgs: mpsc::UnboundedReceiver<
             ExecuteTask {
                 run_id,
                 task_id,
-                task,
+                details,
                 response,
                 tracker,
             } => {
                 let url = base_url.clone();
-                match submit_slurm_job(&base_url, &client, &task_id, &task).await {
+                match submit_slurm_job(&base_url, &client, &task_id, &details).await {
                     Ok(slurm_id) => {
                         let (kill_tx, kill_rx) = oneshot::channel();
                         let tid = task_id.clone();
                         tokio::spawn(async move {
-                            watch_job(slurm_id, run_id, tid, task, url, response, kill_rx).await;
+                            watch_job(slurm_id, run_id, tid, details, url, response, kill_rx).await;
                         });
                         let (tx, _) = oneshot::channel();
                         tracker
@@ -447,28 +440,28 @@ mod tests {
         let task_spec = format!(
             r#"
                 {{
-                    "details": {{
-                        "command": [ "/usr/bin/echo", "hello", "$MYVAR" ],
-                        "user": "{}",
-                        "jwt_token": "{}",
-                        "environment": {{
-                            "MYVAR": "fancy_pants"
-                        }},
-                        "logdir": "/tmp"
-                    }}
+                    "command": [ "/usr/bin/echo", "hello", "$MYVAR" ],
+                    "user": "{}",
+                    "jwt_token": "{}",
+                    "environment": {{
+                        "MYVAR": "fancy_pants"
+                    }},
+                    "logdir": "/tmp"
                 }}"#,
             user, token
         );
 
-        let task: Task = serde_json::from_str(task_spec.as_str()).unwrap();
-        let task_id = TaskID::new(0, &"fancy_pants".to_owned(), 0);
+        let details: TaskDetails = serde_json::from_str(task_spec.as_str()).unwrap();
+        let task_id = "test_task".to_owned();
+        let run_id: RunID = 0;
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (log_tx, _) = mpsc::unbounded_channel();
         exe_tx
             .send(ExecutorMessage::ExecuteTask {
+                run_id,
                 task_id,
-                task: task,
+                details,
                 response: tx,
                 tracker: log_tx,
             })
@@ -500,25 +493,25 @@ mod tests {
         let task_spec = format!(
             r#"
                 {{
-                    "details": {{
-                        "command": [ "sleep", "1800" ],
-                        "user": "{}",
-                        "jwt_token": "{}",
-                        "logdir": "/tmp"
-                    }}
+                    "command": [ "sleep", "1800" ],
+                    "user": "{}",
+                    "jwt_token": "{}",
+                    "logdir": "/tmp"
                 }}"#,
             user, token
         );
 
-        let task: Task = serde_json::from_str(task_spec.as_str()).unwrap();
-        let task_id = TaskID::new(0, &"fancy_pants".to_owned(), 0);
+        let details: TaskDetails = serde_json::from_str(task_spec.as_str()).unwrap();
+        let task_id = "test_task".to_owned();
+        let run_id: RunID = 0;
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (log_tx, _) = mpsc::unbounded_channel();
         exe_tx
             .send(ExecutorMessage::ExecuteTask {
+                run_id,
                 task_id: task_id.clone(),
-                task: task.clone(),
+                details,
                 response: tx,
                 tracker: log_tx,
             })
@@ -531,6 +524,7 @@ mod tests {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         exe_tx
             .send(ExecutorMessage::StopTask {
+                run_id,
                 task_id,
                 response: cancel_tx,
             })
