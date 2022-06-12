@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 
+// Contains all the dependency and state of a particular vertex in a DAG
 #[derive(Clone, Debug)]
 pub struct Vertex<T> {
     pub id: T,
@@ -39,6 +40,7 @@ impl<T> DAG<T>
 where
     T: Hash + PartialEq + Eq + Clone + Debug,
 {
+    // Creates a new, empty DAG.
     #[must_use]
     pub fn new() -> Self {
         DAG {
@@ -49,6 +51,7 @@ where
         }
     }
 
+    // Returns a copy of a vertex structure identified by `key`, if it exists in the DAG.
     pub fn get_vertex(&self, key: &T) -> Option<Vertex<T>> {
         self.keymap.get(key).map(|idx| self.vertices[*idx].clone())
     }

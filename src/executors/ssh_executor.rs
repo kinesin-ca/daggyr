@@ -127,13 +127,13 @@ fn sshify_task(mut details: TaskDetails, target: &SSHTarget) -> Result<TaskDetai
 fn validate_task(details: &TaskDetails, max_capacities: &[TaskResources]) -> Result<()> {
     match extract_details(details) {
         Ok(details) => {
-            if !max_capacities
+            if max_capacities
                 .iter()
                 .any(|x| x.can_satisfy(&details.resources))
             {
-                Err(anyhow!( "No SSH target satisfies the required resources"))
-            } else {
                 Ok(())
+            } else {
+                Err(anyhow!( "No SSH target satisfies the required resources"))
             }
         }
         Err(err) => Err(anyhow!(err)),

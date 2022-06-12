@@ -161,7 +161,7 @@ pub struct Task {
     #[serde(default)]
     pub parents: Vec<String>,
 
-    pub details: serde_json::Value,
+    pub details: TaskDetails,
 }
 
 impl Task {

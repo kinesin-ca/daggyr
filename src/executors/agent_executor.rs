@@ -76,13 +76,13 @@ fn extract_details(details: &TaskDetails) -> Result<AgentTaskDetail, serde_json:
 
 fn validate_task(details: &TaskDetails, max_capacities: &[TaskResources]) -> Result<()> {
     let parsed = extract_details(details)?;
-    if !max_capacities
+    if max_capacities
         .iter()
         .any(|x| x.can_satisfy(&parsed.resources))
     {
-       Err(anyhow!("No Agent target satisfies the required resources"))
-    } else {
         Ok(())
+    } else {
+       Err(anyhow!("No Agent target satisfies the required resources"))
     }
 }
 

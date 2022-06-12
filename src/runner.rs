@@ -2,7 +2,7 @@ use super::Result;
 use crate::dag::DAG;
 use crate::messages::{ExecutorMessage, RunnerMessage, TrackerMessage};
 use crate::structs::{
-    Parameters, RunID, RunTags, State, Task, TaskAttempt, TaskID, TaskSet, TaskType,
+    Parameters, RunID, RunTags, State, Task, TaskAttempt, TaskDetails, TaskID, TaskSet, TaskType,
 };
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -272,10 +272,35 @@ impl Run {
         self.tasks.len()
     }
 
+    fn submit_task(&self, task_id: TaskID, details: TaskDetails) -> Result<()> {
+        if let Err(e) = self.executor.send(ExecutorMessage::ExecuteTask {
+            run_id: self.run_id,
+            task_id,
+            details,
+            response: self.runner.clone(),
+            tracker: self.tracker.clone(),
+        }) {
+            Err(anyhow!(e))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn update_task_state(&self, task_id: TaskID, state: State) -> Result<()> {
+        let (response, rx) = oneshot::channel();
+        self.tracker.send(TrackerMessage::UpdateTaskState {
+            run_id: self.run_id,
+            task_id,
+            state,
+            response,
+        })?;
+        rx.await?
+    }
+
     /// Enqueues as many tasks as possible, returns end state
-    pub async fn run(&mut self) -> State {
+    pub async fn run(&mut self) -> Result<State> {
         if !(self.state == State::Queued || self.state == State::Running) {
-            return self.state;
+            return Ok(self.state);
         }
         if !self.dag.can_progress() {
             self.state = if self.dag.is_complete() {
@@ -293,23 +318,15 @@ impl Run {
                 })
                 .unwrap_or(());
             rx.await.unwrap().unwrap_or(());
-            return self.state;
+            return Ok(self.state);
         }
 
         // Enqueue as many tasks as possible
         while let Some(task_id) = self.dag.visit_next() {
-            match self.tasks.get(&task_id).unwrap().task_type {
+            let task = self.tasks.get(&task_id).unwrap();
+            match task.task_type {
                 TaskType::Normal => {
-                    // Start the executor
-                    self.executor
-                        .send(ExecutorMessage::ExecuteTask {
-                            run_id: self.run_id,
-                            task_id: task_id.clone(),
-                            details: self.tasks.get(&task_id).unwrap().details.clone(),
-                            response: self.runner.clone(),
-                            tracker: self.tracker.clone(),
-                        })
-                        .unwrap_or(());
+                    self.submit_task(task_id.clone(), task.details.clone())?;
                 }
                 TaskType::Structural => {
                     let mut attempt = TaskAttempt::new();
@@ -324,7 +341,7 @@ impl Run {
                 }
             }
         }
-        self.state
+        Ok(self.state)
     }
 
     pub async fn handle_generator(&mut self, task_id: TaskID, attempt: &TaskAttempt) -> Result<()> {
@@ -367,16 +384,8 @@ impl Run {
                     })
                     .unwrap();
                 cancel_rx.await.unwrap_or(());
-                let (response, rx) = oneshot::channel();
-                self.tracker
-                    .send(TrackerMessage::UpdateTaskState {
-                        run_id: self.run_id,
-                        task_id: vertex.id.clone(),
-                        state: State::Killed,
-                        response,
-                    })
-                    .unwrap();
-                rx.await??;
+                self.update_task_state(vertex.id.clone(), State::Killed)
+                    .await?;
             }
         }
         let (response, rx) = oneshot::channel();
@@ -397,16 +406,8 @@ impl Run {
         }
 
         self.dag.set_vertex_state(&task_id, State::Killed).unwrap();
-        let (response, rx) = oneshot::channel();
-        self.tracker
-            .send(TrackerMessage::UpdateTaskState {
-                run_id: self.run_id,
-                task_id: task_id.clone(),
-                state: State::Killed,
-                response,
-            })
-            .unwrap();
-        rx.await??;
+        self.update_task_state(task_id.clone(), State::Killed)
+            .await?;
         Ok(())
     }
 
@@ -449,21 +450,17 @@ impl Run {
         }
 
         // Update the state
-        let (response, rx) = oneshot::channel();
-        self.tracker
-            .send(TrackerMessage::UpdateTaskState {
-                run_id: self.run_id,
-                task_id: task_id.clone(),
-                state: new_state,
-                response,
-            })
-            .unwrap();
-        rx.await??;
+        self.update_task_state(task_id.clone(), new_state).await?;
 
         // TODO implement retry logic here
-
-        self.dag
-            .complete_visit(task_id, new_state != State::Completed)?;
+        let task = self.tasks.get(task_id).unwrap().clone();
+        if new_state == State::Errored && task.retries < task.max_retries {
+            self.tasks.get_mut(task_id).unwrap().retries += 1;
+            self.submit_task(task_id.clone(), task.details.clone())?;
+        } else {
+            self.dag
+                .complete_visit(task_id, new_state != State::Completed)?;
+        }
         Ok(())
     }
 }
@@ -495,20 +492,32 @@ async fn start_dag_runner(
                 executor,
             } => {
                 // Queue all pending tasks
-                match Run::new(tags, tasks, parameters, tracker, executor, msg_tx.clone()).await {
+                let result = match Run::new(
+                    tags,
+                    tasks,
+                    parameters,
+                    tracker,
+                    executor,
+                    msg_tx.clone(),
+                )
+                .await
+                {
                     Ok(mut run) => {
                         let run_id = run.run_id;
 
                         // Update the state of the run
-                        if run.run().await == State::Running {
-                            runs.insert(run_id, run);
+                        match run.run().await {
+                            Ok(State::Running) => {
+                                runs.insert(run_id, run);
+                                Ok(run_id)
+                            }
+                            Ok(state) => Err(anyhow!("Run in state {:?} after enqueuing", state)),
+                            Err(e) => Err(anyhow!("Error enqueing run: {:?}", e)),
                         }
-                        response.send(Ok(run_id)).unwrap_or(());
                     }
-                    Err(e) => {
-                        response.send(Err(e)).unwrap_or(());
-                    }
-                }
+                    Err(e) => Err(e),
+                };
+                response.send(result).unwrap_or(());
             }
             StopRun { run_id, response } => match runs.get_mut(&run_id) {
                 Some(run) => {
@@ -532,12 +541,16 @@ async fn start_dag_runner(
                     Occupied(_) => Err(anyhow!("Run ID is currently running, cannot retry.")),
                     Vacant(e) => {
                         match Run::from_tracker(run_id, tracker, executor, msg_tx.clone()).await {
-                            Ok(mut run) => {
-                                if run.run().await == State::Running {
+                            Ok(mut run) => match run.run().await {
+                                Ok(State::Running) => {
                                     e.insert(run);
+                                    Ok(())
                                 }
-                                Ok(())
-                            }
+                                Ok(state) => {
+                                    Err(anyhow!("Run in state {:?} after enqueuing", state))
+                                }
+                                Err(e) => Err(anyhow!("Error enqueing run: {:?}", e)),
+                            },
                             Err(e) => Err(e),
                         }
                     }
@@ -551,8 +564,11 @@ async fn start_dag_runner(
             } => {
                 if let Some(run) = runs.get_mut(&run_id) {
                     run.complete_task(&task_id, attempt).await.unwrap_or(());
-                    if run.run().await != State::Running {
-                        runs.remove(&run_id);
+                    // TODO NOT SURE ABOUT THIS
+                    if let Ok(state) = run.run().await {
+                        if state != State::Running {
+                            runs.remove(&run_id);
+                        }
                     }
                 }
             }
@@ -869,5 +885,72 @@ mod tests {
 
         // Close off everything
         log_tx.send(TrackerMessage::Stop {}).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_task_retries() {
+        use serde_json::json;
+        use std::fs;
+        use std::io::prelude::*;
+        use std::path::Path;
+        use State::{Completed, Errored, Queued, Running};
+
+        // Write out a shell script that will fail first, then succeed
+        let script_file = Path::new("./runner_retry_test.sh");
+        let test_file = Path::new("./runner_retry_test");
+        let script = r#"#!/usr/bin/env bash
+        export TEST_FILE="$1"
+        if [[ -e "$TEST_FILE" ]]; then
+            exit 0
+        else
+            /usr/bin/touch "$TEST_FILE"
+            exit 1
+        fi
+        "#;
+
+        if test_file.exists() {
+            fs::remove_file(test_file).unwrap();
+        }
+
+        // In its own scope to force the sync/close
+        {
+            let mut script_fh = fs::File::create(script_file).unwrap();
+            script_fh.write_all(script.as_bytes()).unwrap();
+        }
+
+        let mut tasks = TaskSet::new();
+
+        let mut retry_task = Task::new();
+        retry_task.details = json!({
+            "command": [ "/bin/bash", script_file, test_file ]
+        });
+        retry_task.max_retries = 3;
+        tasks.insert("retry_task".to_owned(), retry_task);
+
+        let parameters = HashMap::new();
+
+        let (run_id, log_tx) = run(&tasks, &parameters).await;
+
+        for (task_id, task) in tasks {
+            let (tx, rx) = oneshot::channel();
+            log_tx
+                .send(TrackerMessage::GetTask {
+                    run_id,
+                    task_id: task_id.clone(),
+                    response: tx,
+                })
+                .unwrap();
+
+            let task_record = rx.await.unwrap().unwrap();
+            assert_eq!(task, task_record.task);
+            assert_eq!(task_record.attempts.len(), 2);
+            let states: Vec<State> = task_record.state_changes.iter().map(|x| x.state).collect();
+            assert_eq!(states, vec![Queued, Running, Errored, Running, Completed]);
+        }
+
+        // Close off tracker
+        log_tx.send(TrackerMessage::Stop {}).unwrap();
+        fs::remove_file(script_file).unwrap();
+        fs::remove_file(test_file).unwrap();
     }
 }
