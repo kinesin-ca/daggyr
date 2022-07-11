@@ -26,6 +26,7 @@ actix-web = "4"
 actix-cors = "0.6"
 env_logger = "0.9"
 dotenv = "0.15"
+diesel = { version = "1.4.8", features = ["postgres", "sqlite" ] }
 
 [features]
 slurm = ["users"]
