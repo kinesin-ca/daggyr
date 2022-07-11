@@ -27,7 +27,7 @@ erDiagram
 	TASK {
 		int id PK "Serial"
 		int taskId PK
-		int runId	FK,PK "The run this parameter belongs to, or NULL"
+		int runId	FK "The run this parameter belongs to, or NULL"
 		string name
 		task_type taskType
 		bool isGenerator
