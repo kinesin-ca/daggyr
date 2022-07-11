@@ -1,8 +1,8 @@
 -- Your SQL goes here
-create table parameters (
+create table state_changes (
   id bigserial primary key,
   run_id bigint references runs(id),
   task_id bigint references tasks(id),
-  key varchar(255),
-  value varchar(255)
+  datetime timestamp,
+  state state
 )
