@@ -1,7 +1,6 @@
 use super::Result;
 use deadpool_postgres::{Client, Manager, ManagerConfig, Pool, RecyclingMethod};
 pub use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::str::FromStr;
 use tokio_postgres::NoTls;
 

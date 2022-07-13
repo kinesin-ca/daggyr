@@ -6,6 +6,8 @@ use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
 use bytes::BytesMut;
+use fallible_iterator::FallibleIterator;
+use postgres_protocol::types;
 use std::error::Error;
 use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
 
@@ -15,7 +17,9 @@ pub type TaskDetails = serde_json::Value;
 
 pub type ExpansionValues = Vec<(String, String)>;
 
-// Wrapper around this type so we can add traits
+//
+// Parameters Wrapper
+//
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct Parameters(HashMap<String, Vec<String>>);
 
@@ -62,6 +66,27 @@ impl ToSql for Parameters {
     to_sql_checked!();
 }
 
+impl<'a> FromSql<'a> for Parameters {
+    fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Parameters, Box<dyn Error + Sync + Send>> {
+        let hmap = types::hstore_from_sql(raw)?
+            .map(|(k, v)| {
+                Ok((
+                    k.to_owned(),
+                    serde_json::from_str(v.unwrap_or("[]")).unwrap(),
+                ))
+            })
+            .collect()?;
+        Ok(Parameters(hmap))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "hstore"
+    }
+}
+
+//
+// Runtags Wrapper
+//
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct RunTags(HashMap<String, String>);
 
@@ -127,6 +152,24 @@ impl ToSql for RunTags {
 
     to_sql_checked!();
 }
+
+impl<'a> FromSql<'a> for RunTags {
+    fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<RunTags, Box<dyn Error + Sync + Send>> {
+        let hmap: HashMap<String, String> = HashMap::<String, Option<String>>::from_sql(ty, raw)?
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone().unwrap()))
+            .collect();
+        Ok(RunTags(hmap))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "hstore"
+    }
+}
+
+//
+// TaskResources Wrapper
+//
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct TaskResources(HashMap<String, i64>);
