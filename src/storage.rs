@@ -178,8 +178,16 @@ impl Storage {
         Ok(run_id)
     }
 
-    pub async fn create_table(&self) {}
-    pub async fn add_tasks(&self) {}
+    /*
+    pub async fn add_tasks(&self, run_id: RunID, tasks: &TaskSet) -> Result<()> {
+        let client = self.get_client();
+        for (task_id, task) in tasks {
+            client
+                .query("INSERT INTO tasks (run_id, task_id, task_type, is_generator, max_retries) VALUES ($1::INT, $2::TEXT, $3::TEXT, $4::BOOLEAN, $5::INT)", &[&run_id, &task_id, &val])
+                .await?;
+        }
+    }
+    */
     pub async fn update_task(&self) {}
     pub async fn update_run_state(&self) {}
     pub async fn update_task_state(&self) {}
