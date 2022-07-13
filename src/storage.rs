@@ -1,56 +1,13 @@
 use super::Result;
 use deadpool_postgres::{Client, Manager, ManagerConfig, Pool, RecyclingMethod};
 pub use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::str::FromStr;
 use tokio_postgres::NoTls;
 
 use crate::migrations::{Migration, MIGRATIONS};
 
 use crate::structs::{Parameters, RunID, RunTags};
-
-/*
-#[derive(Clone, Debug)]
-pub struct Migration {
-    up: String,
-    down: String,
-    path: String,
-}
-
-pub struct MigrationsDir {
-    pub root: String,
-}
-
-impl MigrationsDir {
-    pub fn load(&self) -> Result<Vec<Migration>> {
-        let mut migrations = Vec::new();
-        // read_dir returns the handles in random order, but we need
-        // to apply them in lexicographical order
-        let mut sources: Vec<String> = std::fs::read_dir(&self.root)?
-            .map(|x| x.unwrap().path())
-            .filter(|x| x.is_dir())
-            .map(|x| x.to_str().unwrap().to_string())
-            .collect();
-
-        sources.sort();
-
-        for source in sources {
-            let mut base = std::path::PathBuf::from(&source);
-            base.push("up.sql");
-            let up = String::from(base.to_string_lossy());
-            base.pop();
-            base.push("down.sql");
-            let down = String::from(base.to_string_lossy());
-            let migration = Migration {
-                up: std::fs::read_to_string(&up)?,
-                down: std::fs::read_to_string(&down)?,
-                path: source,
-            };
-            migrations.push(migration);
-        }
-        Ok(migrations)
-    }
-}
-*/
 
 pub struct Storage {
     pool: Pool,
@@ -68,17 +25,15 @@ impl Storage {
             .build()
             .expect("Unable to build DB pool");
         // Attempt to connect before returning
-        let storage = Storage { pool };
-        storage.migrate().await.expect("Failed migrations");
-        storage
+        Storage { pool }
     }
 
     async fn get_client(&self) -> Client {
         self.pool.get().await.expect("Unable to create client")
     }
 
-    async fn get_last_migration_id(&self, client: &Client) -> Result<usize> {
-        let mut last_applied_migration: i32 = 0;
+    async fn get_last_migration_id(&self, client: &Client) -> Result<i32> {
+        let mut last_applied_migration: i32 = -1;
         if let Ok(rows) = client.query("SELECT max(id) from _migrations", &[]).await {
             if !rows.is_empty() && !rows[0].is_empty() {
                 last_applied_migration = rows[0].try_get(0).unwrap_or(last_applied_migration);
@@ -86,33 +41,34 @@ impl Storage {
         } else {
             // Create the table
             client
-                    .query("CREATE TABLE _migrations (id SERIAL PRIMARY KEY, path varchar(1024), applied TIMESTAMP default NOW())", &[])
+                    .query("CREATE TABLE _migrations (id INT PRIMARY KEY, name varchar(255), applied TIMESTAMP default NOW())", &[])
                     .await
                     ?;
         }
-        Ok(last_applied_migration as usize)
+        Ok(last_applied_migration)
     }
 
-    pub async fn reset(&self) -> Result<()> {
+    pub async fn migrate_down(&self) -> Result<()> {
         let client = self.get_client().await;
         let last_applied_migration = self.get_last_migration_id(&client).await?;
-        println!("Last applied migration id is {}", last_applied_migration);
         let mut migrations: Vec<Migration> = MIGRATIONS
             .iter()
-            .take(last_applied_migration)
+            .take(usize::try_from(last_applied_migration + 1).unwrap_or(0))
             .cloned()
             .collect();
 
         migrations.reverse();
 
         for migration in migrations {
-            println!("Unwinding {}", migration.name);
             client.query(migration.down, &[]).await?;
         }
 
-        println!("Clearing migrations table");
         client.query("DELETE FROM _migrations", &[]).await?;
+        Ok(())
+    }
 
+    pub async fn reset(&self) -> Result<()> {
+        self.migrate_down().await?;
         self.migrate().await?;
 
         Ok(())
@@ -124,13 +80,13 @@ impl Storage {
         // Apply outstanding migrations
         let last_applied_migration = self.get_last_migration_id(&client).await?;
         for (i, migration) in MIGRATIONS.iter().enumerate() {
-            if i + 1 > last_applied_migration {
-                println!("Applying migration {} from {}", i + 1, migration.name);
+            let id = i32::try_from(i).unwrap();
+            if id > last_applied_migration {
                 client.query(migration.up, &[]).await?;
                 client
                     .query(
-                        "INSERT INTO _migrations (path) VALUES ($1::TEXT)",
-                        &[&migration.name],
+                        "INSERT INTO _migrations (id, name) VALUES ($1::INT, $2::TEXT)",
+                        &[&id, &migration.name],
                     )
                     .await?;
             }
@@ -151,31 +107,24 @@ impl Storage {
 
     // Query
     pub async fn create_run(&self, tags: &RunTags, parameters: &Parameters) -> Result<RunID> {
-        let run_id;
         let client = self.get_client().await;
         let rows = client
-            .query("INSERT INTO runs (buf) VALUES ('a') RETURNING id", &[])
+            .query(
+                "INSERT INTO runs (tags, parameters) VALUES ($1::HSTORE, $2::HSTORE) RETURNING id",
+                &[&tags, &parameters],
+            )
             .await?;
-        let rid: i64 = rows[0].try_get(0).unwrap();
-        run_id = rid as RunID;
+        let rid: i64 = rows[0].try_get(0)?;
 
-        // Insert parameters
-        for (key, vals) in parameters {
-            for val in vals {
-                client
-                    .query("INSERT INTO parameters (run_id, key, value) VALUES ($1::INT, $2::TEXT, $3::TEXT)", &[&rid, &key, &val])
-                    .await?;
-            }
-        }
+        client
+            .query(
+                "INSERT INTO state_changes (run_id, state) VALUES ($1::BIGINT, $2::TEXT) RETURNING id",
+                &[&rid, &"Queued"],
+            )
+            .await?;
+        let rid: i64 = rows[0].try_get(0)?;
 
-        // Insert Tags
-        for (key, val) in tags.iter() {
-            client
-                .query("INSERT INTO parameters (run_id, key, value) VALUES ($1::INT, $2::TEXT, $3::TEXT)", &[&rid, &key, &val])
-                .await?;
-        }
-
-        Ok(run_id)
+        Ok(RunID::try_from(rid)?)
     }
 
     /*
@@ -208,6 +157,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     fn get_url() -> String {
         let user = users::get_user_by_uid(users::get_current_uid()).unwrap();
@@ -218,7 +168,16 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_basic_storage() {
+        let url = get_url();
+        let storage = Storage::new(&url, None).await;
+        storage.reset().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_storing_run() {
         let url = get_url();
         let storage = Storage::new(&url, None).await;
         storage.reset().await.unwrap();

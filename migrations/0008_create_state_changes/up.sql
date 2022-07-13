@@ -4,5 +4,6 @@ create table state_changes (
   run_id bigint references runs(id),
   task_id bigint references tasks(id),
   datetime timestamp,
-  state state
+  state state,
+  UNIQUE (run_id, task_id, datetime)
 )

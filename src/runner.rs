@@ -86,7 +86,9 @@ impl Run {
         let mut expanded_tasks = TaskSet::new();
         for (task_id, mut task) in tasks {
             let mut task_parameters = self.parameters.clone();
-            task_parameters.extend(task.parameters.clone().into_iter());
+            for (k, v) in task.parameters.iter() {
+                task_parameters.insert(k.clone(), v.clone());
+            }
             let (tx, rx) = oneshot::channel();
             self.executor
                 .send(ExecutorMessage::ExpandTaskDetails {
@@ -665,7 +667,7 @@ mod tests {
         )
         .unwrap();
 
-        let parameters = HashMap::new();
+        let parameters = Parameters::new();
 
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
@@ -776,7 +778,7 @@ mod tests {
         )
         .unwrap();
 
-        let parameters = HashMap::new();
+        let parameters = Parameters::new();
 
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 
@@ -838,7 +840,7 @@ mod tests {
             }
         }"#;
 
-        let parameters = HashMap::new();
+        let parameters = Parameters::new();
 
         let task_id = "fancy_generator".to_owned();
 
@@ -927,7 +929,7 @@ mod tests {
         retry_task.max_retries = 3;
         tasks.insert("retry_task".to_owned(), retry_task);
 
-        let parameters = HashMap::new();
+        let parameters = Parameters::new();
 
         let (run_id, log_tx) = run(&tasks, &parameters).await;
 

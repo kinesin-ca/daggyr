@@ -5,12 +5,62 @@ pub use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
+use bytes::BytesMut;
+use std::error::Error;
+use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
+
 pub type RunID = usize;
 pub type TaskID = String;
 pub type TaskDetails = serde_json::Value;
 
-pub type Parameters = HashMap<String, Vec<String>>;
 pub type ExpansionValues = Vec<(String, String)>;
+
+// Wrapper around this type so we can add traits
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+pub struct Parameters(HashMap<String, Vec<String>>);
+
+impl Deref for Parameters {
+    type Target = HashMap<String, Vec<String>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Parameters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Parameters {
+    pub fn new() -> Self {
+        Parameters(HashMap::new())
+    }
+}
+
+impl ToSql for Parameters {
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + 'static + Send + Sync>> {
+        if ty.name() != "hstore" {
+            return Err(format!("expected type hstore but saw {}", ty.name()).into());
+        }
+
+        let db_parameters: HashMap<String, Option<String>> = self
+            .iter()
+            .map(|(k, v)| (k.clone(), Some(serde_json::to_string(&v).unwrap().clone())))
+            .collect();
+        db_parameters.to_sql(ty, out)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "hstore"
+    }
+
+    to_sql_checked!();
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct RunTags(HashMap<String, String>);
@@ -51,6 +101,31 @@ impl DerefMut for RunTags {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
+}
+
+impl ToSql for RunTags {
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + 'static + Send + Sync>> {
+        if ty.name() != "hstore" {
+            return Err(format!("expected type hstore but saw {}", ty.name()).into());
+        }
+
+        let db_tags: HashMap<String, Option<String>> = self
+            .iter()
+            .map(|(k, v)| (k.clone(), Some(v.clone())))
+            .collect();
+
+        db_tags.to_sql(ty, out)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "hstore"
+    }
+
+    to_sql_checked!();
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]

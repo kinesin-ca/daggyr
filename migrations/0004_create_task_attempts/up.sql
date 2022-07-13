@@ -12,5 +12,6 @@ create table task_attempts (
   exit_code int,
   max_cpu float,
   avg_cpu float,
-  max_rss int
-)
+  max_rss int,
+  UNIQUE (task_id, start_time)
+);
