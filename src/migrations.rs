@@ -1,5 +1,3 @@
-use super::Result;
-
 macro_rules! migration {
     ($name:literal, $dir:literal) => {{
         Migration {

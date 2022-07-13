@@ -79,7 +79,6 @@ impl Storage {
 
     async fn get_last_migration_id(&self, client: &Client) -> Result<usize> {
         let mut last_applied_migration: i32 = 0;
-        let client = self.get_client().await;
         if let Ok(rows) = client.query("SELECT max(id) from _migrations", &[]).await {
             if !rows.is_empty() && !rows[0].is_empty() {
                 last_applied_migration = rows[0].try_get(0).unwrap_or(last_applied_migration);
@@ -202,6 +201,18 @@ impl Storage {
 mod tests {
     use super::*;
 
+    fn get_url() -> String {
+        let user = users::get_user_by_uid(users::get_current_uid()).unwrap();
+        format!(
+            "postgres://{}@localhost:5432/daggyr_test",
+            user.name().to_string_lossy()
+        )
+    }
+
     #[tokio::test]
-    async fn test_basic_storage() {}
+    async fn test_basic_storage() {
+        let url = get_url();
+        let storage = Storage::new(&url, None).await;
+        storage.reset().await.unwrap();
+    }
 }
