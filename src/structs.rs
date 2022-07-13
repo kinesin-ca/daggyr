@@ -8,8 +8,9 @@ use std::ops::{Deref, DerefMut};
 use bytes::BytesMut;
 use fallible_iterator::FallibleIterator;
 use postgres_protocol::types;
+use postgres_types::{FromSql, ToSql};
 use std::error::Error;
-use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
+use tokio_postgres::types::{to_sql_checked, IsNull, Type};
 
 pub type RunID = usize;
 pub type TaskID = String;
@@ -17,11 +18,58 @@ pub type TaskDetails = serde_json::Value;
 
 pub type ExpansionValues = Vec<(String, String)>;
 
+/*
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+pub struct RunID(usize);
+
+impl Deref for RunID {
+    type Target = usize;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for RunID {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl ToSql for RunID {
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + 'static + Send + Sync>> {
+        let v = i64::try_from(self.0).unwrap();
+        v.to_sql(ty, out)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "hstore"
+    }
+
+    to_sql_checked!();
+}
+
+impl<'a> FromSql<'a> for RunID {
+    fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<RunID, Box<dyn Error + Sync + Send>> {
+        let v: i64 = i64::from_sql(ty, raw)?;
+        let r = usize::try_from(v)?;
+        Ok(RunID(r))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "hstore"
+    }
+}
+*/
+
 //
 // Parameters Wrapper
 //
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
-pub struct Parameters(HashMap<String, Vec<String>>);
+pub struct Parameters(pub HashMap<String, Vec<String>>);
 
 impl Deref for Parameters {
     type Target = HashMap<String, Vec<String>>;
@@ -87,8 +135,8 @@ impl<'a> FromSql<'a> for Parameters {
 //
 // Runtags Wrapper
 //
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct RunTags(HashMap<String, String>);
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+pub struct RunTags(pub HashMap<String, String>);
 
 impl RunTags {
     #[must_use]
@@ -229,7 +277,7 @@ impl TaskResources {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Copy, Debug, PartialEq, Hash, Eq)]
+#[derive(Clone, Serialize, Deserialize, Copy, Debug, PartialEq, Hash, Eq, ToSql, FromSql)]
 pub enum State {
     Queued,
     Running,
@@ -238,7 +286,7 @@ pub enum State {
     Killed,
 }
 
-#[derive(Clone, Serialize, Deserialize, Copy, Debug, PartialEq, Hash, Eq)]
+#[derive(Clone, Serialize, Deserialize, Copy, Debug, PartialEq, Hash, Eq, ToSql, FromSql)]
 pub enum TaskType {
     Normal,
     Structural,

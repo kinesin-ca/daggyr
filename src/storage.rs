@@ -1,12 +1,13 @@
 use super::Result;
 use deadpool_postgres::{Client, Manager, ManagerConfig, Pool, RecyclingMethod};
 pub use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::str::FromStr;
 use tokio_postgres::NoTls;
 
 use crate::migrations::{Migration, MIGRATIONS};
 
-use crate::structs::{Parameters, RunID, RunTags};
+use crate::structs::{Parameters, RunID, RunRecord, RunTags, State};
 
 pub struct Storage {
     pool: Pool,
@@ -117,11 +118,10 @@ impl Storage {
 
         client
             .query(
-                "INSERT INTO state_changes (run_id, state) VALUES ($1::BIGINT, $2::TEXT) RETURNING id",
-                &[&rid, &"Queued"],
+                "INSERT INTO state_changes (run_id, state) VALUES ($1::BIGINT, $2::STATE) RETURNING id",
+                &[&rid, &State::Queued],
             )
             .await?;
-        let rid: i64 = rows[0].try_get(0)?;
 
         Ok(RunID::try_from(rid)?)
     }
@@ -143,7 +143,24 @@ impl Storage {
 
     // Update
     pub async fn get_runs(&self) {}
-    pub async fn get_run(&self) {}
+    pub async fn get_run(&self, run_id: RunID) -> Result<Option<RunRecord>> {
+        let client = self.get_client().await;
+        let run_id = i64::try_from(run_id).unwrap();
+        let rows = client
+            .query("SELECT * FROM runs WHERE id = $1::BIGINT", &[&run_id])
+            .await?;
+
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(RunRecord {
+            tags: rows[0].try_get("tags")?,
+            parameters: rows[0].try_get("parameters")?,
+            tasks: HashMap::new(),
+            state_changes: Vec::new(),
+        }))
+    }
     pub async fn get_run_state(&self) {}
     pub async fn get_run_state_updates(&self) {}
     pub async fn get_task_summary(&self) {}
@@ -179,6 +196,26 @@ mod tests {
     async fn test_storing_run() {
         let url = get_url();
         let storage = Storage::new(&url, None).await;
-        storage.reset().await.unwrap();
+
+        // Create a run
+        let tags = RunTags(HashMap::<String, String>::from([
+            ("abc".to_owned(), "def".to_owned()),
+            ("kea".to_owned(), "alsdkm".to_owned()),
+        ]));
+        let parameters = Parameters(HashMap::<String, Vec<String>>::from([
+            (
+                "asldkm".to_owned(),
+                vec!["alskdfm".to_owned(), "asldkm".to_owned()],
+            ),
+            (
+                "hehldkm".to_owned(),
+                vec!["alskdfm".to_owned(), "hehldkm".to_owned()],
+            ),
+        ]));
+
+        let run_id = storage.create_run(&tags, &parameters).await.unwrap();
+        let run = storage.get_run(run_id).await.unwrap().unwrap();
+        assert_eq!(run.tags, tags);
+        assert_eq!(run.parameters, parameters);
     }
 }

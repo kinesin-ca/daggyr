@@ -23,6 +23,6 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!("create task types", "0002_create_task_types"),
     migration!("create tasks", "0003_create_tasks"),
     migration!("create task attempts", "0004_create_task_attempts"),
-    migration!("create state type", "0007_create_state_type"),
+    // migration!("create state type", "0007_create_state_type"),
     migration!("create state changes", "0008_create_state_changes"),
 ];
