@@ -7,7 +7,7 @@ use tokio_postgres::NoTls;
 
 use crate::migrations::{Migration, MIGRATIONS};
 
-use crate::structs::{Parameters, RunID, RunRecord, RunTags, State};
+use crate::structs::{Parameters, RunID, RunRecord, RunTags, State, TaskSet};
 
 pub struct Storage {
     pool: Pool,
@@ -126,16 +126,15 @@ impl Storage {
         Ok(RunID::try_from(rid)?)
     }
 
-    /*
     pub async fn add_tasks(&self, run_id: RunID, tasks: &TaskSet) -> Result<()> {
-        let client = self.get_client();
+        let client = self.get_client().await;
         for (task_id, task) in tasks {
             client
-                .query("INSERT INTO tasks (run_id, task_id, task_type, is_generator, max_retries) VALUES ($1::INT, $2::TEXT, $3::TEXT, $4::BOOLEAN, $5::INT)", &[&run_id, &task_id, &val])
+                .query("INSERT INTO tasks (run_id, name, task_type, is_generator, max_retries, details, expansion_values) VALUES ($1::INT, $2::TEXT, $3::TASKTYPE, $4::BOOLEAN, $5::INT, $6::JSON, $7::HSTORE)", &[&run_id, &task_id, &task.task_type, &task.details, &task.expansion_values])
                 .await?;
         }
+        Ok(())
     }
-    */
     pub async fn update_task(&self) {}
     pub async fn update_run_state(&self) {}
     pub async fn update_task_state(&self) {}

@@ -16,7 +16,7 @@ pub type RunID = usize;
 pub type TaskID = String;
 pub type TaskDetails = serde_json::Value;
 
-pub type ExpansionValues = Vec<(String, String)>;
+pub type ExpansionValues = HashMap<String, String>;
 
 /*
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
@@ -306,7 +306,7 @@ pub struct Task {
     pub run_id: RunID,
 
     #[serde(default)]
-    pub expansion_values: Vec<(String, String)>,
+    pub expansion_values: ExpansionValues,
 
     #[serde(default)]
     pub parameters: Parameters,
