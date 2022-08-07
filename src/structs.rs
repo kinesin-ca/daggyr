@@ -278,6 +278,7 @@ impl TaskResources {
 }
 
 #[derive(Clone, Serialize, Deserialize, Copy, Debug, PartialEq, Hash, Eq, ToSql, FromSql)]
+#[postgres(name = "state")]
 pub enum State {
     Queued,
     Running,
