@@ -6,7 +6,7 @@ create table tasks (
   task_type tasktype not null default 'Normal',
   is_generator boolean not null default 'f',
   max_retries smallint not null default 3,
-  details TEXT not null,
+  details JSON not null,
   expansion_values HSTORE,
   UNIQUE (run_id, name)
 )

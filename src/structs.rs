@@ -288,6 +288,7 @@ pub enum State {
 }
 
 #[derive(Clone, Serialize, Deserialize, Copy, Debug, PartialEq, Hash, Eq, ToSql, FromSql)]
+#[postgres(name = "tasktype")]
 pub enum TaskType {
     Normal,
     Structural,
