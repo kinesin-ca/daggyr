@@ -8,5 +8,5 @@ create table tasks (
   max_retries smallint not null default 3,
   details TEXT not null,
   expansion_values HSTORE,
-  UNIQUE (name, run_id)
+  UNIQUE (run_id, name)
 )

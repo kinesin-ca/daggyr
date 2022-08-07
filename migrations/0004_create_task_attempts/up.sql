@@ -1,7 +1,7 @@
 -- Your SQL goes here
 create table task_attempts (
   id bigserial primary key,
-  task_id bigint references tasks(id),
+  task_id bigint references tasks(id) not null,
   start_time timestamp,
   stop_time timestamp,
   succeeded boolean,
