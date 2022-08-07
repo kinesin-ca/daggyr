@@ -60,7 +60,6 @@ impl Storage {
         migrations.reverse();
 
         for migration in migrations {
-            println!("DOWN: {}", migration.name);
             client.query(migration.down, &[]).await?;
         }
 
@@ -83,7 +82,6 @@ impl Storage {
         for (i, migration) in MIGRATIONS.iter().enumerate() {
             let id = i32::try_from(i).unwrap();
             if id > last_applied_migration {
-                println!("UP: {}", migration.name);
                 client.query(migration.up, &[]).await?;
                 client
                     .query(
